@@ -8,6 +8,8 @@ defmodule Synapse.Application do
   @impl true
   def start(_type, _args) do
     children = [
+      Synapse.Registry,
+      Synapse.RuntimeSupervisor,
       SynapseWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:synapse, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Synapse.PubSub},

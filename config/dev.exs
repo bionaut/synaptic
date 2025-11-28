@@ -39,6 +39,11 @@ config :synapse, SynapseWeb.Endpoint,
 # configured to run both http and https servers on
 # different ports.
 
+config :synapse, Synapse.Tools.OpenAI,
+  api_key: System.fetch_env!("OPENAI_API_KEY"),
+  # or whichever you prefer
+  model: "gpt-4o-mini"
+
 # Enable dev routes for dashboard and mailbox
 config :synapse, dev_routes: true
 

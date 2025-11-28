@@ -30,6 +30,13 @@ config :synapse, SynapseWeb.Endpoint,
 # at the `config/runtime.exs`.
 config :synapse, Synapse.Mailer, adapter: Swoosh.Adapters.Local
 
+# Synapse workflow defaults
+config :synapse, Synapse.Tools, llm_adapter: Synapse.Tools.OpenAI
+
+config :synapse, Synapse.Tools.OpenAI,
+  finch: Synapse.Finch,
+  model: "gpt-4o-mini"
+
 # Configures Elixir's Logger
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",

@@ -1,0 +1,40 @@
+defmodule Synapse.Step do
+  @moduledoc """
+  Metadata structure for compiled workflow steps.
+  """
+
+  defstruct [
+    :name,
+    input: %{},
+    output: %{},
+    suspend?: false,
+    resume_schema: %{},
+    max_retries: 0
+  ]
+
+  @type t :: %__MODULE__{
+          name: atom(),
+          input: map(),
+          output: map(),
+          suspend?: boolean(),
+          resume_schema: map(),
+          max_retries: non_neg_integer()
+        }
+
+  @doc false
+  def new(name, opts) do
+    %__MODULE__{
+      name: name,
+      input: Keyword.get(opts, :input, %{}),
+      output: Keyword.get(opts, :output, %{}),
+      suspend?: Keyword.get(opts, :suspend, false),
+      resume_schema: Keyword.get(opts, :resume_schema, %{}),
+      max_retries: Keyword.get(opts, :retry, 0)
+    }
+  end
+
+  @doc false
+  def run(%__MODULE__{} = step, workflow_module, context) do
+    apply(workflow_module, :__synapse_handle__, [step.name, context])
+  end
+end
