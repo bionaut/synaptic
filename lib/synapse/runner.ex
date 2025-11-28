@@ -5,6 +5,9 @@ defmodule Synapse.Runner do
   require Logger
 
   alias Synapse.{Registry, Step}
+  alias Phoenix.PubSub
+
+  @pubsub Synapse.PubSub
 
   @type state :: %{
           run_id: String.t(),
@@ -12,7 +15,7 @@ defmodule Synapse.Runner do
           steps: [Step.t()],
           current_step_index: non_neg_integer(),
           context: map(),
-          status: :running | :waiting_for_human | :completed | :failed,
+          status: :running | :waiting_for_human | :completed | :failed | :stopped,
           waiting: map() | nil,
           history: list(map()),
           retry_budget: map(),
@@ -45,6 +48,14 @@ defmodule Synapse.Runner do
 
   def history(run_id) do
     GenServer.call(Registry.via(run_id), :history)
+  end
+
+  def stop(run_id, reason \\ :canceled) do
+    try do
+      GenServer.call(Registry.via(run_id), {:stop, reason})
+    catch
+      :exit, {:noproc, _} -> {:error, :not_found}
+    end
   end
 
   # Server callbacks
@@ -101,6 +112,17 @@ defmodule Synapse.Runner do
   end
 
   @impl true
+  def handle_call({:stop, reason}, _from, state) do
+    new_state =
+      state
+      |> Map.put(:status, :stopped)
+      |> push_history(%{event: :stopped, reason: reason})
+      |> publish_event(%{event: :stopped, reason: reason})
+
+    {:stop, {:shutdown, reason}, :ok, new_state}
+  end
+
+  @impl true
   def handle_call({:resume, payload}, _from, %{status: :waiting_for_human} = state) do
     with :ok <- validate_resume_payload(state, payload) do
       new_state =
@@ -109,6 +131,7 @@ defmodule Synapse.Runner do
         |> Map.put(:waiting, nil)
         |> Map.update!(:context, &Map.put(&1, :human_input, payload))
         |> push_history(%{event: :resumed, payload: payload})
+        |> publish_event(%{event: :resumed, payload: payload})
 
       {:reply, :ok, new_state, {:continue, :process_next_step}}
     else
@@ -127,7 +150,11 @@ defmodule Synapse.Runner do
     case Enum.at(state.steps, state.current_step_index) do
       nil ->
         if state.status == :running do
-          new_state = push_history(state, %{event: :completed})
+          new_state =
+            state
+            |> push_history(%{event: :completed})
+            |> publish_event(%{event: :completed})
+
           {:halt, Map.put(new_state, :status, :completed)}
         else
           {:halt, state}
@@ -163,15 +190,23 @@ defmodule Synapse.Runner do
           end)
           |> increment_step()
           |> push_history(%{step: step.name, status: :ok})
+          |> publish_event(%{event: :step_completed, step: step.name})
 
         {:continue, new_state}
 
       {:suspend, info} when is_map(info) ->
         message = Map.get(info, :message)
         metadata = Map.get(info, :metadata, %{})
+        context_updates = Map.get(info, :context_updates, %{})
+
+        new_context =
+          state.context
+          |> Map.merge(context_updates)
+          |> Map.delete(:human_input)
 
         new_state =
           state
+          |> Map.put(:context, new_context)
           |> Map.put(:status, :waiting_for_human)
           |> Map.put(:waiting, %{
             step: step.name,
@@ -180,6 +215,8 @@ defmodule Synapse.Runner do
             resume_schema: step.resume_schema
           })
           |> push_history(%{step: step.name, status: :waiting, message: message})
+          |> publish_event(%{event: :waiting_for_human, step: step.name, message: message})
+          |> publish_event(%{event: :waiting_for_human, step: step.name})
 
         {:halt, new_state}
 
@@ -200,13 +237,32 @@ defmodule Synapse.Runner do
     Map.update!(state, :history, &[timestamped | &1])
   end
 
+  defp publish_event(state, payload) do
+    event =
+      payload
+      |> Map.put(:run_id, state.run_id)
+      |> Map.put(:current_step, current_step_name(state))
+
+    PubSub.broadcast(@pubsub, topic(state.run_id), {:synapse_event, event})
+    state
+  end
+
+  defp topic(run_id), do: "synapse:run:" <> run_id
+
   defp handle_step_error(step, reason, state) do
     remaining = Map.get(state.retry_budget, step.name, 0)
 
     state =
-      push_history(state, %{
+      state
+      |> push_history(%{
         step: step.name,
         status: :error,
+        reason: reason,
+        retries_remaining: remaining
+      })
+      |> publish_event(%{
+        event: :step_error,
+        step: step.name,
         reason: reason,
         retries_remaining: remaining
       })
@@ -218,6 +274,13 @@ defmodule Synapse.Runner do
         new_state =
           state
           |> Map.update!(:retry_budget, &Map.put(&1, step.name, remaining - 1))
+          |> Map.put(:last_error, reason)
+          |> publish_event(%{
+            event: :retrying,
+            step: step.name,
+            retries_remaining: remaining - 1,
+            reason: reason
+          })
 
         {:continue, new_state}
 
@@ -228,6 +291,7 @@ defmodule Synapse.Runner do
           state
           |> Map.put(:status, :failed)
           |> Map.put(:last_error, reason)
+          |> publish_event(%{event: :failed, step: step.name, reason: reason})
 
         {:halt, failed_state}
     end

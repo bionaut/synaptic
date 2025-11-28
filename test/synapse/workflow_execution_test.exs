@@ -66,6 +66,21 @@ defmodule Synapse.WorkflowExecutionTest do
     assert Enum.count(Enum.filter(history, &(&1[:status] == :error))) >= 1
   end
 
+  test "stop halts a workflow and emits event" do
+    {:ok, run_id} = Synapse.start(ApprovalWorkflow, %{})
+    wait_for(run_id, :waiting_for_human)
+
+    :ok = Synapse.subscribe(run_id)
+    on_exit(fn -> Synapse.unsubscribe(run_id) end)
+
+    assert :ok = Synapse.stop(run_id, :user_cancelled)
+
+    assert_receive {:synapse_event, %{event: :stopped, reason: :user_cancelled, run_id: ^run_id}},
+                   1_000
+
+    assert {:error, :not_found} = Synapse.stop(run_id)
+  end
+
   defp wait_for(run_id, status, attempts \\ 20)
   defp wait_for(_run_id, _status, 0), do: flunk("workflow did not reach desired status")
 

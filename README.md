@@ -94,6 +94,19 @@ end
 Synapse.resume(run_id, %{approved: true})
 ```
 
+### Stopping a run
+
+To cancel a workflow early (for example, if a human rejected it out-of-band),
+call:
+
+```elixir
+Synapse.stop(run_id, :user_cancelled)
+```
+
+The optional second argument becomes the `:reason` in the PubSub event and
+history entry. `Synapse.stop/2` returns `:ok` if the run was alive and
+`{:error, :not_found}` otherwise.
+
 ### Dev-only demo workflow
 
 When running with `MIX_ENV=dev`, the module `Synapse.Dev.DemoWorkflow` is loaded
@@ -107,16 +120,40 @@ MIX_ENV=dev iex -S mix
 Then kick off the sample workflow:
 
 ```elixir
-{:ok, run_id} = Synapse.start(Synapse.Dev.DemoWorkflow, %{request: "Plan a kickoff"})
+{:ok, run_id} = Synapse.start(Synapse.Dev.DemoWorkflow, %{topic: "Intro to GenServers"})
 Synapse.inspect(run_id)
-# => shows :waiting_for_human with the generated plan in metadata
+# => prompts you (twice) for learner info before producing an outline
 
 Synapse.resume(run_id, %{approved: true})
 Synapse.history(run_id)
 ```
 
-If no OpenAI credentials are configured the demo automatically falls back to a
-canned plan so you can still practice the suspend/resume loop.
+The demo first asks the LLM to suggest 2–3 clarifying questions, then loops
+through them (suspending after each) before generating the outline. If no OpenAI
+credentials are configured it automatically falls back to canned questions +
+plan so you can still practice the suspend/resume loop.
+
+### Observing runs via PubSub
+
+Subscribe to a run to receive lifecycle events from `Synapse.PubSub`:
+
+```elixir
+:ok = Synapse.subscribe(run_id)
+
+receive do
+  {:synapse_event, %{event: :waiting_for_human, message: msg}} -> IO.puts("Waiting: #{msg}")
+  {:synapse_event, %{event: :step_completed, step: step}} -> IO.puts("Finished #{step}")
+after
+  5_000 -> IO.puts("no events yet")
+end
+
+Synapse.unsubscribe(run_id)
+```
+
+Events include `:waiting_for_human`, `:resumed`, `:step_completed`, `:retrying`,
+`:step_error`, `:failed`, `:stopped`, and `:completed`. Each payload also
+contains `:run_id` and `:current_step`, so LiveView processes can map events to
+the UI state they represent.
 
 ### Running tests
 

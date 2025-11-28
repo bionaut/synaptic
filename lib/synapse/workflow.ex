@@ -43,6 +43,8 @@ defmodule Synapse.Workflow do
     end
   end
 
+  @spec definition(atom() | %{:__synapse_definition__ => any(), optional(any()) => any()}) ::
+          any()
   @doc """
   Produces the compiled workflow definition for the provided module.
   """
@@ -54,8 +56,14 @@ defmodule Synapse.Workflow do
   Convenience helper returned from steps to pause execution and wait for a human
   payload to resume the workflow.
   """
-  def suspend_for_human(message, metadata \\ %{}) when is_binary(message) do
-    {:suspend, %{message: message, metadata: metadata}}
+  def suspend_for_human(message, metadata \\ %{}, context_updates \\ %{})
+      when is_binary(message) do
+    {:suspend,
+     %{
+       message: message,
+       metadata: metadata,
+       context_updates: context_updates
+     }}
   end
 
   defmacro __before_compile__(env) do

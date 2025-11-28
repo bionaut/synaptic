@@ -36,7 +36,8 @@ Phoenix app and where to look when extending it.
     generates a run id, and asks `Synapse.RuntimeSupervisor` to start a new
     runner with that definition + initial context.
   - `resume/2`, `inspect/1`, and `history/1` are convenience wrappers around the
-    runner GenServer calls.
+    runner GenServer calls. `stop/2` sends a shutdown request so the runner can
+    mark itself as `:stopped`, broadcast an event, and terminate cleanly.
 - `Synapse.Runner` is a GenServer that owns the mutable workflow state:
   - Holds the definition, context, current step index, status, waiting payload,
     retry budgets, and history timeline.
@@ -47,6 +48,36 @@ Phoenix app and where to look when extending it.
   - Suspension is represented by setting `status: :waiting_for_human` and
     storing `%{step: ..., resume_schema: ...}` in `waiting`. `resume/2` injects a
     `%{human_input: payload}` into context and continues the step loop.
+  - Every state transition publishes an event on `Synapse.PubSub` (topic
+    `"synapse:run:" <> run_id`) so UIs can observe `:waiting_for_human`,
+    `:resumed`, `:step_completed`, `:retrying`, `:failed`, etc. Each event
+    contains the `:run_id` and `:current_step`. Consumers call
+    `Synapse.subscribe/1` / `Synapse.unsubscribe/1` to manage those listeners.
+
+## Putting it all together (beginner-friendly flow)
+
+1. **You write a workflow module** using `use Synapse.Workflow`. At compile
+   time that macro records each `step/3`, creates a `Synapse.Step` struct for it,
+   and generates hidden functions (`__synapse_handle__/2` and
+   `__synapse_definition__/0`). Nothing is executed yet—you just defined the
+   blueprint.
+2. **The app boots.** When you run `iex -S mix` or `mix phx.server`,
+   `Synapse.Application` spins up the supervision tree (Registry +
+   RuntimeSupervisor). They sit idle waiting for workflow runs.
+3. **You start a run** (e.g., `Synapse.start(MyWorkflow, %{foo: :bar})`). The
+   public API calls into `Synapse.Engine`, which pulls the blueprint from
+   `MyWorkflow.__synapse_definition__/0`, generates a run id, and asks
+   `Synapse.RuntimeSupervisor` to start a `Synapse.Runner` child with that
+   definition + context.
+4. **The runner executes steps.** Once the child process starts, it immediately
+   begins calling your step handlers in order. Returned maps merge into the
+   context, `{:suspend, ...}` pauses the run, and errors trigger retries per the
+   step metadata.
+5. **You interact with the run** using `Synapse.inspect/1` and `Synapse.history/1`
+   (read-only) or `Synapse.resume/2` (writes `human_input` and restarts the loop).
+
+No extra wiring is needed for new workflows—the moment your module is compiled
+and available, the runtime can execute it via `Synapse.start/3`.
 
 ## Message routing + persistence boundaries
 

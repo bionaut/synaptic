@@ -34,6 +34,10 @@ defmodule Synapse.Engine do
     Runner.history(run_id)
   end
 
+  def stop(run_id, reason) do
+    Runner.stop(run_id, reason)
+  end
+
   def workflow_definition(module), do: Workflow.definition(module)
 
   def generate_run_id do

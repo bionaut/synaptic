@@ -6,4 +6,8 @@ defmodule Synapse.Registry do
   end
 
   def via(run_id), do: {:via, Registry, {__MODULE__, run_id}}
+
+  def entries do
+    Registry.select(__MODULE__, [{{:"$1", :_, :_}, [], [{{:"$1", :"$_"}}]}])
+  end
 end
