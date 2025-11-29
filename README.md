@@ -45,29 +45,66 @@ You can also swap adapters by configuring `Synaptic.Tools`:
 config :synaptic, Synaptic.Tools, llm_adapter: MyCustomAdapter
 ```
 
-### Configuring agents with custom models
+### Using different models per step
 
-You can define named agents whose model/adapter configuration differs from the
-global defaults. Provide agent entries under `Synaptic.Tools` and reference
-them via the `agent:` option when calling the tools module:
+Synaptic supports two ways to specify which model to use for each LLM call:
+
+#### Option 1: Named agents (recommended for reusable configurations)
+
+Define named agents in your config with their model and other settings, then reference them by name:
 
 ```elixir
+# In config/config.exs
 config :synaptic, Synaptic.Tools,
   llm_adapter: Synaptic.Tools.OpenAI,
   agents: [
-    researcher: [model: "gpt-4o-mini"],
-    builder: [model: "o4-mini", temperature: 0.1]
+    # Fast, cost-effective model for simple tasks
+    mini: [model: "gpt-4o-mini", temperature: 0.3],
+    # More capable model for complex reasoning
+    turbo: [model: "gpt-4o-turbo", temperature: 0.7],
+    # Most capable model for critical tasks
+    o1: [model: "o1-preview", temperature: 0.1]
   ]
 
-Synaptic.Tools.chat([
-  %{role: "system", content: "You are a helpful researcher"},
-  %{role: "user", content: "Summarize the doc"}
-], agent: :researcher)
+# In your workflow - use the agent name
+Synaptic.Tools.chat(messages, agent: :mini, tools: [tool])
+Synaptic.Tools.chat(messages, agent: :turbo, tools: [tool])
 ```
 
-Agent options are merged with any explicit opts passed to `chat/2`. You can also
-specify `adapter:` inside an agent definition if some agents need a different
-provider altogether.
+Benefits of named agents:
+
+- **Semantic names**: `agent: :mini` is clearer than `model: "gpt-4o-mini"`
+- **Bundle multiple settings**: model, temperature, adapter, etc. in one place
+- **Centralized configuration**: change the model in config, not scattered across code
+- **Reusable**: define once, use throughout your workflows
+
+#### Option 2: Direct model specification
+
+Pass the model name directly to `chat/2` for one-off usage:
+
+```elixir
+# Use a specific model directly
+Synaptic.Tools.chat(messages, model: "gpt-4o-mini", tools: [tool])
+Synaptic.Tools.chat(messages, model: "gpt-4o-turbo", temperature: 0.8, tools: [tool])
+```
+
+#### Model resolution priority
+
+When both are specified, the system resolves options in this order:
+
+1. Direct options passed to `chat/2` (e.g., `model:`, `temperature:`)
+2. Options from the named agent (if `agent:` is specified)
+3. Global defaults from `Synaptic.Tools.OpenAI` config
+4. Hardcoded fallback: `"gpt-4o-mini"`
+
+This means you can override agent settings per call:
+
+```elixir
+# Uses "gpt-4o-turbo" from :turbo agent, but overrides temperature to 0.5
+Synaptic.Tools.chat(messages, agent: :turbo, temperature: 0.5)
+```
+
+You can also specify `adapter:` inside an agent definition if some agents need a different provider altogether.
 
 ### Tool calling
 
