@@ -169,6 +169,33 @@ end
 Synaptic.resume(run_id, %{approved: true})
 ```
 
+### Starting at a specific step
+
+For complex workflows, you can start execution at a specific step with pre-populated context. This is useful when you want to skip earlier steps or resume from a checkpoint:
+
+```elixir
+# Start at the :finalize step with context that simulates earlier steps
+context = %{
+  prepared: true,
+  approval: true
+}
+
+{:ok, run_id} = Synaptic.start(
+  ExampleFlow,
+  context,
+  start_at_step: :finalize
+)
+```
+
+The `:start_at_step` option accepts a step name (atom). The provided context should contain all data that would have been accumulated up to that step. If the step name doesn't exist in the workflow, `start/3` returns `{:error, :invalid_step}`.
+
+This feature is particularly useful for:
+
+- Testing specific sections of complex workflows
+- Resuming workflows from checkpoints
+- Debugging by starting at problematic steps
+- Replaying workflows with different context
+
 ### Parallel steps
 
 Use `parallel_step/3` when you want to fan out work, wait for all tasks, and
@@ -248,6 +275,28 @@ Synaptic.inspect(run_id)
 
 Synaptic.resume(run_id, %{approved: true})
 Synaptic.history(run_id)
+```
+
+You can also start the demo workflow at a specific step:
+
+```elixir
+# Start at :generate_learning_plan with pre-answered questions
+context = %{
+  topic: "Elixir Concurrency",
+  clarification_answers: %{
+    "q_background" => "I know basic Elixir",
+    "q_goal" => "Build distributed systems"
+  },
+  pending_questions: [],
+  current_question: nil,
+  question_source: :fallback
+}
+
+{:ok, run_id} = Synaptic.start(
+  Synaptic.Dev.DemoWorkflow,
+  context,
+  start_at_step: :generate_learning_plan
+)
 ```
 
 The demo first asks the LLM to suggest 2–3 clarifying questions, then loops

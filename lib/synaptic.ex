@@ -9,6 +9,21 @@ defmodule Synaptic do
 
   @doc """
   Starts a workflow module with the provided input context.
+
+  ## Options
+
+    * `:run_id` - Custom run ID (defaults to auto-generated)
+    * `:start_at_step` - Start execution at a specific step by name (atom).
+      The step must exist in the workflow definition. The provided context
+      should contain all data that would have been accumulated up to that step.
+
+  ## Examples
+
+      # Start from the beginning (default)
+      {:ok, run_id} = Synaptic.start(MyWorkflow, %{initial: :data})
+
+      # Start at a specific step with pre-populated context
+      {:ok, run_id} = Synaptic.start(MyWorkflow, %{precomputed: :value}, start_at_step: :middle_step)
   """
   def start(workflow_module, input \\ %{}, opts \\ []) when is_map(input) do
     Engine.start(workflow_module, input, opts)

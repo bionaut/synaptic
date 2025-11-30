@@ -67,12 +67,13 @@ defmodule Synaptic.Runner do
   def init(opts) do
     definition = Keyword.fetch!(opts, :definition)
     steps = definition.steps
+    start_at_step_index = Keyword.get(opts, :start_at_step_index, 0)
 
     state = %{
       run_id: Keyword.fetch!(opts, :run_id),
       workflow: definition.module,
       steps: steps,
-      current_step_index: 0,
+      current_step_index: start_at_step_index,
       context: Keyword.get(opts, :context, %{}),
       status: :running,
       waiting: nil,

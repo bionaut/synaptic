@@ -35,12 +35,20 @@ OTP application and where to look when extending it.
   - When `Synaptic.start/3` is called it fetches the workflow definition,
     generates a run id, and asks `Synaptic.RuntimeSupervisor` to start a new
     runner with that definition + initial context.
+  - The `:start_at_step` option allows starting execution at a specific step by
+    name. The engine validates the step exists, finds its index in the steps
+    list, and passes `start_at_step_index` to the runner. Invalid step names
+    return `{:error, :invalid_step}`.
   - `resume/2`, `inspect/1`, and `history/1` are convenience wrappers around the
     runner GenServer calls. `stop/2` sends a shutdown request so the runner can
     mark itself as `:stopped`, broadcast an event, and terminate cleanly.
 - `Synaptic.Runner` is a GenServer that owns the mutable workflow state:
   - Holds the definition, context, current step index, status, waiting payload,
     retry budgets, and history timeline.
+  - On init it accepts an optional `:start_at_step_index` option. If provided,
+    the runner initializes `current_step_index` to that value instead of 0,
+    allowing execution to begin at a specific step. The provided context should
+    contain all data that would have been accumulated up to that step.
   - On init it immediately `{:continue, :process_next_step}` so runs execute as
     soon as the child boots.
   - Each step execution happens inside `Task.async/await` so crashes are caught
@@ -68,7 +76,9 @@ OTP application and where to look when extending it.
    public API calls into `Synaptic.Engine`, which pulls the blueprint from
    `MyWorkflow.__synaptic_definition__/0`, generates a run id, and asks
    `Synaptic.RuntimeSupervisor` to start a `Synaptic.Runner` child with that
-   definition + context.
+   definition + context. Optionally, you can pass `start_at_step: :step_name` to
+   begin execution at a specific step; the engine validates the step exists and
+   finds its index before starting the runner.
 4. **The runner executes steps.** Once the child process starts, it immediately
    begins calling your step handlers in order. Returned maps merge into the
    context, `{:suspend, ...}` pauses the run, and errors trigger retries per the

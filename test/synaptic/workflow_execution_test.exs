@@ -106,6 +106,32 @@ defmodule Synaptic.WorkflowExecutionTest do
     commit()
   end
 
+  defmodule MultiStepWorkflow do
+    use Synaptic.Workflow
+
+    step :first do
+      send(context.test_pid, {:step_executed, :first})
+      {:ok, %{first_result: "first", order: [:first]}}
+    end
+
+    step :second do
+      send(context.test_pid, {:step_executed, :second})
+      {:ok, %{second_result: "second", order: context.order ++ [:second]}}
+    end
+
+    step :third do
+      send(context.test_pid, {:step_executed, :third})
+      {:ok, %{third_result: "third", order: context.order ++ [:third]}}
+    end
+
+    step :final do
+      send(context.test_pid, {:step_executed, :final})
+      {:ok, %{final_result: "done", order: context.order ++ [:final]}}
+    end
+
+    commit()
+  end
+
   test "workflow suspends and resumes" do
     {:ok, run_id} = Synaptic.start(ApprovalWorkflow, %{})
 
@@ -184,6 +210,106 @@ defmodule Synaptic.WorkflowExecutionTest do
     snapshot = wait_for(run_id, :failed)
     assert snapshot.last_error == :boom
     assert snapshot.context[:after]
+  end
+
+  test "start at specific step by name" do
+    parent = self()
+    context = %{test_pid: parent, first_result: "precomputed", order: [:first]}
+
+    {:ok, run_id} = Synaptic.start(MultiStepWorkflow, context, start_at_step: :second)
+
+    # Should not execute first step
+    refute_receive {:step_executed, :first}, 100
+
+    # Should execute from second step onwards
+    assert_receive {:step_executed, :second}, 500
+    assert_receive {:step_executed, :third}, 500
+    assert_receive {:step_executed, :final}, 500
+
+    snapshot = wait_for(run_id, :completed)
+    assert snapshot.context[:order] == [:first, :second, :third, :final]
+    assert snapshot.context[:first_result] == "precomputed"
+    assert snapshot.context[:second_result] == "second"
+    assert snapshot.context[:third_result] == "third"
+    assert snapshot.context[:final_result] == "done"
+  end
+
+  test "start at last step" do
+    parent = self()
+    context = %{
+      test_pid: parent,
+      first_result: "precomputed",
+      second_result: "precomputed",
+      third_result: "precomputed",
+      order: [:first, :second, :third]
+    }
+
+    {:ok, run_id} = Synaptic.start(MultiStepWorkflow, context, start_at_step: :final)
+
+    # Should not execute earlier steps
+    refute_receive {:step_executed, :first}, 100
+    refute_receive {:step_executed, :second}, 100
+    refute_receive {:step_executed, :third}, 100
+
+    # Should only execute final step
+    assert_receive {:step_executed, :final}, 500
+
+    snapshot = wait_for(run_id, :completed)
+    assert snapshot.context[:order] == [:first, :second, :third, :final]
+    assert snapshot.context[:final_result] == "done"
+  end
+
+  test "start at step 0 behaves like normal start" do
+    parent = self()
+    {:ok, run_id} = Synaptic.start(MultiStepWorkflow, %{test_pid: parent}, start_at_step: :first)
+
+    assert_receive {:step_executed, :first}, 500
+    assert_receive {:step_executed, :second}, 500
+    assert_receive {:step_executed, :third}, 500
+    assert_receive {:step_executed, :final}, 500
+
+    snapshot = wait_for(run_id, :completed)
+    assert snapshot.context[:order] == [:first, :second, :third, :final]
+  end
+
+  test "rejects invalid step name" do
+    assert {:error, :invalid_step} =
+             Synaptic.start(MultiStepWorkflow, %{}, start_at_step: :nonexistent)
+  end
+
+  test "context is properly initialized when starting at specific step" do
+    parent = self()
+    # Provide context that simulates what would have been accumulated up to step 3
+    context = %{
+      test_pid: parent,
+      first_result: "from_step_1",
+      second_result: "from_step_2",
+      third_result: "from_step_3",
+      order: [:first, :second, :third],
+      custom_data: "preserved"
+    }
+
+    {:ok, run_id} = Synaptic.start(MultiStepWorkflow, context, start_at_step: :final)
+
+    snapshot = wait_for(run_id, :completed)
+
+    # All context should be preserved
+    assert snapshot.context[:first_result] == "from_step_1"
+    assert snapshot.context[:second_result] == "from_step_2"
+    assert snapshot.context[:third_result] == "from_step_3"
+    assert snapshot.context[:custom_data] == "preserved"
+    assert snapshot.context[:order] == [:first, :second, :third, :final]
+  end
+
+  test "starting at middle step with approval workflow" do
+    # Start at finalize step with pre-approved context
+    context = %{approval: true}
+
+    {:ok, run_id} = Synaptic.start(ApprovalWorkflow, context, start_at_step: :finalize)
+
+    snapshot = wait_for(run_id, :completed)
+    assert snapshot.context[:status] == :approved
+    assert snapshot.current_step == nil
   end
 
   defp wait_for(run_id, status, attempts \\ 20)
