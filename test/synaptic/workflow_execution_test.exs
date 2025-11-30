@@ -67,6 +67,45 @@ defmodule Synaptic.WorkflowExecutionTest do
     commit()
   end
 
+  defmodule AsyncWorkflow do
+    use Synaptic.Workflow
+
+    step :prepare do
+      send(context.test_pid, {:step, :prepare})
+      {:ok, %{order: [:prepare]}}
+    end
+
+    async_step :notify do
+      send(context.test_pid, {:async_started, Map.get(context, :order)})
+      Process.sleep(50)
+      send(context.test_pid, {:async_done, Map.get(context, :order)})
+      {:ok, %{async_result: true}}
+    end
+
+    step :finalize do
+      send(context.test_pid, {:final_step, Map.get(context, :async_result, false)})
+      {:ok, %{status: Map.get(context, :async_result, false)}}
+    end
+
+    commit()
+  end
+
+  defmodule AsyncFailureWorkflow do
+    use Synaptic.Workflow
+
+    async_step :flaky, retry: 1 do
+      Process.sleep(30)
+      {:error, :boom}
+    end
+
+    step :after_async do
+      send(context.test_pid, :after_async)
+      {:ok, %{after: true}}
+    end
+
+    commit()
+  end
+
   test "workflow suspends and resumes" do
     {:ok, run_id} = Synaptic.start(ApprovalWorkflow, %{})
 
@@ -118,6 +157,33 @@ defmodule Synaptic.WorkflowExecutionTest do
     assert snapshot.context[:status] == :assembled
     assert_receive {:task_started, :title}, 500
     assert_receive {:task_started, :metadata}, 500
+  end
+
+  test "async steps continue the workflow while running in the background" do
+    parent = self()
+    {:ok, run_id} = Synaptic.start(AsyncWorkflow, %{test_pid: parent})
+
+    assert_receive {:step, :prepare}, 500
+    assert_receive {:async_started, [:prepare]}, 500
+    assert_receive {:final_step, false}, 500
+
+    assert Synaptic.inspect(run_id).status == :running
+
+    assert_receive {:async_done, [:prepare]}, 500
+
+    snapshot = wait_for(run_id, :completed)
+    assert snapshot.context[:async_result]
+  end
+
+  test "async step failures propagate after retries" do
+    parent = self()
+    {:ok, run_id} = Synaptic.start(AsyncFailureWorkflow, %{test_pid: parent})
+
+    assert_receive :after_async, 500
+
+    snapshot = wait_for(run_id, :failed)
+    assert snapshot.last_error == :boom
+    assert snapshot.context[:after]
   end
 
   defp wait_for(run_id, status, attempts \\ 20)

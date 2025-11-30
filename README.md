@@ -193,6 +193,29 @@ Each parallel task returns `{:ok, map}` or `{:error, reason}`. Synaptic runs the
 tasks concurrently and merges their maps into the workflow context before
 continuing to the next `step/3`.
 
+### Async steps
+
+Use `async_step/3` to trigger a task and immediately continue with the rest of
+the workflow. Async steps execute in the background with the same retry and
+error semantics as regular steps. Their return values are merged into the
+context once they finish, and the workflow completes after every async task
+has resolved:
+
+```elixir
+async_step :notify_observers do
+  Notifications.deliver(context)
+  {:ok, %{notifications_sent: true}}
+end
+
+step :persist_final_state do
+  {:ok, %{status: :saved}}
+end
+```
+
+If an async step fails, Synaptic applies the configured `:retry` budget. Once
+retries are exhausted the workflow transitions to `:failed`, even if later
+steps already ran.
+
 ### Stopping a run
 
 To cancel a workflow early (for example, if a human rejected it out-of-band),

@@ -20,7 +20,7 @@ defmodule Synaptic.Step do
           suspend?: boolean(),
           resume_schema: map(),
           max_retries: non_neg_integer(),
-          type: :sequential | :parallel
+          type: :sequential | :parallel | :async
         }
 
   @doc false

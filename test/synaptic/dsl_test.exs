@@ -34,6 +34,16 @@ defmodule Synaptic.DSLTest do
     commit()
   end
 
+  defmodule AsyncWorkflow do
+    use Synaptic.Workflow
+
+    async_step :notify do
+      {:ok, %{fired: true}}
+    end
+
+    commit()
+  end
+
   test "workflow definition includes ordered step metadata" do
     definition = Synaptic.workflow_definition(ExampleWorkflow)
 
@@ -47,6 +57,13 @@ defmodule Synaptic.DSLTest do
     [step] = definition.steps
 
     assert step.type == :parallel
+  end
+
+  test "async steps are marked in the workflow definition" do
+    definition = Synaptic.workflow_definition(AsyncWorkflow)
+    [step] = definition.steps
+
+    assert step.type == :async
   end
 
   test "suspend_for_human helper formats payload" do

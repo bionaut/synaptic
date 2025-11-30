@@ -22,7 +22,8 @@ defmodule Synaptic.Runner do
           waiting: map() | nil,
           history: list(map()),
           retry_budget: map(),
-          last_error: term()
+          last_error: term(),
+          async_tasks: %{optional(pid()) => %{step: Step.t(), monitor_ref: reference()}}
         }
 
   # Client API
@@ -77,7 +78,8 @@ defmodule Synaptic.Runner do
       waiting: nil,
       history: [],
       retry_budget: Map.new(steps, &{&1.name, &1.max_retries}),
-      last_error: nil
+      last_error: nil,
+      async_tasks: %{}
     }
 
     {:ok, state, {:continue, :process_next_step}}
@@ -152,15 +154,20 @@ defmodule Synaptic.Runner do
   defp maybe_process_step(state) do
     case Enum.at(state.steps, state.current_step_index) do
       nil ->
-        if state.status == :running do
-          new_state =
-            state
-            |> push_history(%{event: :completed})
-            |> publish_event(%{event: :completed})
+        cond do
+          state.status != :running ->
+            {:halt, state}
 
-          {:halt, Map.put(new_state, :status, :completed)}
-        else
-          {:halt, state}
+          async_pending?(state) ->
+            {:halt, state}
+
+          true ->
+            new_state =
+              state
+              |> push_history(%{event: :completed})
+              |> publish_event(%{event: :completed})
+
+            {:halt, Map.put(new_state, :status, :completed)}
         end
 
       step ->
@@ -189,6 +196,18 @@ defmodule Synaptic.Runner do
       other ->
         handle_step_error(step, {:invalid_parallel_return, other}, state)
     end
+  end
+
+  defp execute_step(%Step{type: :async} = step, state) do
+    Logger.metadata(run_id: state.run_id, step: step.name)
+    Logger.debug("starting async step #{step.name}")
+
+    new_state =
+      state
+      |> launch_async_step(step)
+      |> increment_step()
+
+    {:continue, new_state}
   end
 
   defp execute_step(step, state) do
@@ -235,14 +254,8 @@ defmodule Synaptic.Runner do
   end
 
   defp invoke_step(step, state) do
-    try do
-      Task.async(fn -> Step.run(step, state.workflow, state.context) end)
-      |> Task.await(:infinity)
-    catch
-      kind, reason ->
-        Logger.error("step #{step.name} crashed: #{inspect({kind, reason})}")
-        {:error, {kind, reason}}
-    end
+    Task.async(fn -> run_step_fun(step, state.workflow, state.context) end)
+    |> Task.await(:infinity)
   end
 
   defp handle_step_success(state, step, data) do
@@ -303,6 +316,149 @@ defmodule Synaptic.Runner do
   defp run_parallel_task(fun, context) when is_function(fun, 1), do: fun.(context)
   defp run_parallel_task(fun, _context) when is_function(fun, 0), do: fun.()
   defp run_parallel_task(_other, _context), do: {:error, :invalid_parallel_task}
+
+  defp async_pending?(state), do: map_size(state.async_tasks) > 0
+
+  @impl true
+  def handle_info({:async_step_result, pid, result}, state) do
+    case Map.pop(state.async_tasks, pid) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {%{monitor_ref: ref, step: step}, async_tasks} ->
+        Process.demonitor(ref, [:flush])
+
+        new_state =
+          state
+          |> Map.put(:async_tasks, async_tasks)
+          |> process_async_result(step, result)
+
+        {:noreply, new_state}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
+    case Map.get(state.async_tasks, pid) do
+      nil ->
+        {:noreply, state}
+
+      %{monitor_ref: ^ref, step: step} ->
+        if reason == :normal do
+          {:noreply, state}
+        else
+          async_tasks = Map.delete(state.async_tasks, pid)
+
+          new_state =
+            state
+            |> Map.put(:async_tasks, async_tasks)
+            |> process_async_result(step, {:error, {:exit, reason}})
+
+          {:noreply, new_state}
+        end
+    end
+  end
+
+  defp process_async_result(%{status: :running} = state, step, result) do
+    handle_async_result(step, result, state)
+  end
+
+  defp process_async_result(state, _step, _result), do: state
+
+  defp handle_async_result(step, {:ok, data}, state) when is_map(data) do
+    state
+    |> Map.update!(:context, fn ctx ->
+      ctx
+      |> Map.merge(data)
+      |> Map.delete(:human_input)
+    end)
+    |> push_history(%{step: step.name, status: :ok, async: true})
+    |> publish_event(%{event: :step_completed, step: step.name, async: true})
+    |> maybe_mark_completed()
+  end
+
+  defp handle_async_result(step, {:error, reason}, state) do
+    handle_async_failure(step, reason, state)
+  end
+
+  defp handle_async_result(step, other, state) do
+    handle_async_failure(step, {:invalid_return, other}, state)
+  end
+
+  defp handle_async_failure(step, reason, state) do
+    remaining = Map.get(state.retry_budget, step.name, 0)
+
+    state =
+      state
+      |> push_history(%{
+        step: step.name,
+        status: :error,
+        reason: reason,
+        retries_remaining: remaining,
+        async: true
+      })
+      |> publish_event(%{
+        event: :step_error,
+        step: step.name,
+        reason: reason,
+        retries_remaining: remaining,
+        async: true
+      })
+
+    cond do
+      remaining > 0 ->
+        Logger.warning("retrying async step #{step.name}, #{remaining} retries remaining")
+
+        state
+        |> Map.update!(:retry_budget, &Map.put(&1, step.name, remaining - 1))
+        |> publish_event(%{
+          event: :retrying,
+          step: step.name,
+          retries_remaining: remaining - 1,
+          reason: reason,
+          async: true
+        })
+        |> launch_async_step(step)
+
+      true ->
+        Logger.error("async step #{step.name} failed permanently: #{inspect(reason)}")
+
+        state
+        |> Map.put(:status, :failed)
+        |> Map.put(:last_error, reason)
+        |> publish_event(%{event: :failed, step: step.name, reason: reason})
+    end
+  end
+
+  defp maybe_mark_completed(state) do
+    if state.status == :running and state.current_step_index >= length(state.steps) and
+         not async_pending?(state) do
+      state
+      |> push_history(%{event: :completed})
+      |> publish_event(%{event: :completed})
+      |> Map.put(:status, :completed)
+    else
+      state
+    end
+  end
+
+  defp launch_async_step(state, step) do
+    parent = self()
+    workflow = state.workflow
+    context = state.context
+
+    {:ok, pid} =
+      Task.start(fn ->
+        result = run_step_fun(step, workflow, context)
+        send(parent, {:async_step_result, self(), result})
+      end)
+
+    ref = Process.monitor(pid)
+
+    state
+    |> Map.update!(:async_tasks, &Map.put(&1, pid, %{monitor_ref: ref, step: step}))
+    |> push_history(%{step: step.name, status: :async_started, async: true})
+    |> publish_event(%{event: :async_step_started, step: step.name})
+  end
 
   defp topic(run_id), do: "synaptic:run:" <> run_id
 
@@ -398,6 +554,16 @@ defmodule Synaptic.Runner do
     case Enum.at(state.steps, state.current_step_index) do
       nil -> nil
       step -> step.name
+    end
+  end
+
+  defp run_step_fun(step, workflow, context) do
+    try do
+      Step.run(step, workflow, context)
+    catch
+      kind, reason ->
+        Logger.error("step #{step.name} crashed: #{inspect({kind, reason})}")
+        {:error, {kind, reason}}
     end
   end
 end
