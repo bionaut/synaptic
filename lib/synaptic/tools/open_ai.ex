@@ -3,6 +3,8 @@ defmodule Synaptic.Tools.OpenAI do
   Minimal OpenAI chat client built on Finch.
   """
 
+  use Synaptic.Tools.Adapter
+
   @endpoint "https://api.openai.com/v1/chat/completions"
 
   @doc """
@@ -10,6 +12,7 @@ defmodule Synaptic.Tools.OpenAI do
 
   When `stream: true` is passed in opts, returns a streaming response.
   """
+  @impl Synaptic.Tools.Adapter
   def chat(messages, opts \\ []) do
     if Keyword.get(opts, :stream, false) do
       chat_stream(messages, opts)
@@ -89,7 +92,9 @@ defmodule Synaptic.Tools.OpenAI do
 
         {:data, data}, acc ->
           new_buffer = acc.buffer <> IO.iodata_to_binary(data)
-          {remaining_buffer, events, new_accumulated} = parse_sse_events(new_buffer, acc.accumulated)
+
+          {remaining_buffer, events, new_accumulated} =
+            parse_sse_events(new_buffer, acc.accumulated)
 
           # Call on_chunk callback for each event
           if on_chunk do
@@ -145,6 +150,7 @@ defmodule Synaptic.Tools.OpenAI do
   end
 
   defp parse_sse_chunk("data: [DONE]"), do: nil
+
   defp parse_sse_chunk("data: " <> json) do
     case Jason.decode(json) do
       {:ok, decoded} -> decoded
@@ -179,6 +185,7 @@ defmodule Synaptic.Tools.OpenAI do
   end
 
   defp maybe_put_response_format(body, nil), do: body
+
   defp maybe_put_response_format(body, response_format),
     do: Map.put(body, :response_format, response_format)
 
@@ -253,7 +260,9 @@ defmodule Synaptic.Tools.OpenAI do
 
   defp decode_json_content(_content), do: {:error, :invalid_json_response}
 
-  defp json_response_format?(%{"type" => type}) when type in ["json_object", "json_schema"], do: true
+  defp json_response_format?(%{"type" => type}) when type in ["json_object", "json_schema"],
+    do: true
+
   defp json_response_format?(%{type: type}) when type in ["json_object", "json_schema"], do: true
   defp json_response_format?(_), do: false
 
