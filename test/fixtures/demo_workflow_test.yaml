@@ -1,0 +1,9 @@
+name: "Demo Workflow Test - Full Execution"
+workflow: "Synaptic.Dev.DemoWorkflow"
+input:
+  topic: "Elixir Concurrency"
+expectations:
+  status: "completed"
+  context:
+    topic: "Elixir Concurrency"
+    outline: ".*Elixir.*"

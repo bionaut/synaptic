@@ -602,6 +602,142 @@ The interactive script will:
 - Auto-resume workflow steps for demo purposes
 - Show final results and execution history
 
+### Testing Workflows with YAML
+
+Synaptic includes a declarative testing framework that allows non-developers to test workflows using YAML configuration files. This is ideal for AI researchers, management, or anyone who wants to test workflows without writing code.
+
+#### YAML Test Format
+
+Create a YAML file defining your test:
+
+```yaml
+name: "My Workflow Test"
+workflow: "Synaptic.Dev.DemoWorkflow"
+input:
+  topic: "Elixir Concurrency"
+start_at_step: "generate_learning_plan" # Optional: start at specific step
+expectations: # Optional: validate results
+  status: "completed"
+  context:
+    outline: ".*Elixir.*" # Regex pattern matching
+    plan_source: "llm|fallback"
+```
+
+**Required fields:**
+
+- `workflow`: Module name as string (e.g., `"Synaptic.Dev.DemoWorkflow"`)
+- `input`: Map of initial context values
+
+**Optional fields:**
+
+- `name`: Test name for display
+- `start_at_step`: Step name (atom as string) to start execution from
+- `expectations`: Validation rules
+  - `status`: Expected workflow status (`"completed"`, `"failed"`, `"waiting_for_human"`)
+  - `context`: Map of field paths to regex patterns for validation
+
+#### Running Tests
+
+Run a test file using the test runner script:
+
+```bash
+# Basic usage
+mix run scripts/run_tests.exs test/fixtures/demo_workflow_test.yaml
+
+# JSON output only
+mix run scripts/run_tests.exs test/fixtures/demo_workflow_test.yaml --format json
+
+# Console output only
+mix run scripts/run_tests.exs test/fixtures/demo_workflow_test.yaml --format console
+
+# Custom timeout (default: 60 seconds)
+mix run scripts/run_tests.exs test/fixtures/demo_workflow_test.yaml --timeout 120000
+```
+
+#### Handling Human Input
+
+When a workflow suspends for human input, the test runner will:
+
+1. Display the waiting message and required fields
+2. Prompt you to enter a JSON payload
+3. Resume the workflow with your input
+
+Example prompt:
+
+```
+Workflow is waiting for human input
+====================================
+
+Message: Please approve the prepared payload
+
+Required fields:
+  - approved (boolean)
+
+Enter resume payload (JSON format, or 'skip' to skip this test):
+> {"approved": true}
+```
+
+#### Expectation Validation
+
+The test framework supports optional expectations with regex matching:
+
+- **Status validation**: Exact match (case-insensitive)
+- **Context validation**: Regex patterns for field values
+- **Nested paths**: Use dot notation (e.g., `"user.name"`)
+
+Example:
+
+```yaml
+expectations:
+  status: "completed"
+  context:
+    topic: "Elixir.*" # Regex: starts with "Elixir"
+    plan_source: "llm|fallback" # Regex: matches "llm" or "fallback"
+    "user.email": ".*@.*" # Nested path with regex
+```
+
+#### Example Test Files
+
+Example test files are available in `test/fixtures/`:
+
+- `demo_workflow_test.yaml` - Full workflow execution
+- `demo_workflow_test_start_at_step.yaml` - Starting at a specific step
+- `simple_workflow_test.yaml` - Minimal test without expectations
+
+#### Output Formats
+
+**Console output** (default) provides human-readable results:
+
+```
+================================================================================
+Test: Demo Workflow Test
+================================================================================
+
+✓ Status: PASSED
+
+Validation Results:
+  Status Check: ✓ Status matches: completed
+  Context Check: ✓ All context fields match
+
+Final Context:
+  topic: Elixir Concurrency
+  outline: ...
+```
+
+**JSON output** provides structured data for automation:
+
+```json
+{
+  "test_name": "Demo Workflow Test",
+  "workflow": "Synaptic.Dev.DemoWorkflow",
+  "run_id": "...",
+  "status": "success",
+  "validation": { ... },
+  "context": { ... },
+  "execution_time_ms": 1234
+}
+```
+
 ### Running tests
 
 Synaptic has dedicated tests under `test/synaptic`. Run them with:

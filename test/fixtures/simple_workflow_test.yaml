@@ -1,0 +1,6 @@
+name: "Simple Workflow Test"
+workflow: "Synaptic.Dev.DemoWorkflow"
+input:
+  topic: "Testing Basics"
+start_at_step: "generate_learning_plan"
+# No expectations - just run the workflow

@@ -1,0 +1,17 @@
+name: "Demo Workflow Test - Start at Specific Step"
+workflow: "Synaptic.Dev.DemoWorkflow"
+input:
+  topic: "Phoenix LiveView"
+  clarification_answers:
+    q_background: "I know basic Elixir"
+    q_goal: "Build interactive web applications"
+  pending_questions: []
+  current_question: null
+  question_source: "fallback"
+start_at_step: "generate_learning_plan"
+expectations:
+  status: "completed"
+  context:
+    topic: "Phoenix LiveView"
+    plan_source: "llm|fallback"
+    outline: ".*Phoenix.*"
