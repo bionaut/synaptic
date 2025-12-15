@@ -364,6 +364,133 @@ through them (suspending after each) before generating the outline. If no OpenAI
 credentials are configured it automatically falls back to canned questions +
 plan so you can still practice the suspend/resume loop.
 
+### Telemetry
+
+Synaptic emits Telemetry events for workflow execution so host applications can
+collect metrics (e.g. via Phoenix LiveDashboard, Prometheus, StatsD, or custom
+handlers). The library focuses on _emitting_ events; your app is responsible for
+_attaching_ handlers and exporting them.
+
+#### Step timing
+
+Every workflow step is wrapped in a Telemetry span:
+
+- **Events**
+  - `[:synaptic, :step, :start]`
+  - `[:synaptic, :step, :stop]`
+  - `[:synaptic, :step, :exception]` (if the step crashes)
+- **Measurements (on `:stop` / `:exception`)**
+  - `:duration` – native units (convert to ms with `System.convert_time_unit/3`
+    or via `telemetry_metrics` `unit: {:native, :millisecond}`)
+- **Metadata**
+  - `:run_id` – workflow run id
+  - `:workflow` – workflow module
+  - `:step_name` – atom step name
+  - `:type` – `:default | :parallel | :async`
+  - `:status` – `:ok | :suspend | :error | :unknown`
+
+Example: log all step timings from your host app:
+
+```elixir
+:telemetry.attach(
+  "synaptic-step-logger",
+  [:synaptic, :step, :stop],
+  fn _event, measurements, metadata, _config ->
+    duration_ms =
+      System.convert_time_unit(measurements.duration, :native, :millisecond)
+
+    IO.inspect(
+      %{
+        workflow: metadata.workflow,
+        step: metadata.step_name,
+        type: metadata.type,
+        status: metadata.status,
+        duration_ms: duration_ms
+      },
+      label: "Synaptic step"
+    )
+  end,
+  nil
+)
+```
+
+Example: expose a histogram metric (e.g. for LiveDashboard/Prometheus):
+
+```elixir
+import Telemetry.Metrics
+
+def metrics do
+  [
+    summary("synaptic.step.duration",
+      event_name: [:synaptic, :step, :stop],
+      measurement: :duration,
+      unit: {:native, :millisecond},
+      tags: [:workflow, :step_name, :type, :status],
+      tag_values: fn metadata ->
+        %{
+          workflow: inspect(metadata.workflow),
+          step_name: metadata.step_name,
+          type: metadata.type,
+          status: metadata.status
+        }
+      end
+    )
+  ]
+end
+```
+
+#### Side-effect metrics
+
+Side effects declared via `side_effect/2` are also instrumented:
+
+- **Run-time events (when the side effect executes)**
+  - Span: `[:synaptic, :side_effect]` → `:start`, `:stop`, `:exception`
+- **Skip events (when tests set `skip_side_effects: true`)**
+  - `[:synaptic, :side_effect, :skip]`
+- **Metadata**
+  - `:run_id` – workflow run id (when available)
+  - `:step_name` – the surrounding step name
+  - `:side_effect` – optional identifier from `name:` option (or `nil`)
+
+Example workflow usage:
+
+```elixir
+step :save_user do
+  side_effect name: :db_insert_user do
+    Database.insert(context.user)
+  end
+
+  {:ok, %{user_saved: true}}
+end
+```
+
+Example handler for timing side effects:
+
+```elixir
+:telemetry.attach(
+  "synaptic-side-effect-logger",
+  [:synaptic, :side_effect, :stop],
+  fn _event, measurements, metadata, _config ->
+    duration_ms =
+      System.convert_time_unit(measurements.duration, :native, :millisecond)
+
+    IO.inspect(
+      %{
+        run_id: metadata.run_id,
+        step: metadata.step_name,
+        side_effect: metadata.side_effect,
+        duration_ms: duration_ms
+      },
+      label: "Synaptic side effect"
+    )
+  end,
+  nil
+)
+```
+
+You can turn these into metrics the same way as step timings, e.g. a
+`summary("synaptic.side_effect.duration", ...)` with tags `[:step_name, :side_effect]`.
+
 ### Observing runs via PubSub
 
 Subscribe to a run to receive lifecycle events from `Synaptic.PubSub`:

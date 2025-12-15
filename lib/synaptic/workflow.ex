@@ -113,6 +113,7 @@ defmodule Synaptic.Workflow do
   ## Options
 
     * `:default` - Value to return when side effect is skipped (default: `:ok`)
+    * `:name` - Optional identifier for the side effect, used in Telemetry metadata
 
   ## Examples
 
@@ -125,7 +126,7 @@ defmodule Synaptic.Workflow do
       end
 
       step :send_email do
-        side_effect default: {:ok, :sent} do
+        side_effect default: {:ok, :sent}, name: :welcome_email do
           EmailService.send(context.user.email, "Welcome!")
         end
 
@@ -134,12 +135,31 @@ defmodule Synaptic.Workflow do
   """
   defmacro side_effect(opts \\ [], do: block) do
     default_value = Keyword.get(opts, :default, :ok)
+    name = Keyword.get(opts, :name, nil)
 
     quote do
-      if Map.get(var!(context), :__skip_side_effects__, false) do
+      run_id = Map.get(var!(context), :__run_id__)
+      step_name = Map.get(var!(context), :__step_name__)
+      skip? = Map.get(var!(context), :__skip_side_effects__, false)
+      side_effect_name = unquote(name)
+
+      if skip? do
+        :telemetry.execute(
+          [:synaptic, :side_effect, :skip],
+          %{},
+          %{run_id: run_id, step_name: step_name, side_effect: side_effect_name}
+        )
+
         unquote(default_value)
       else
-        unquote(block)
+        :telemetry.span(
+          [:synaptic, :side_effect],
+          %{run_id: run_id, step_name: step_name, side_effect: side_effect_name},
+          fn ->
+            result = unquote(block)
+            {result, %{}}
+          end
+        )
       end
     end
   end
