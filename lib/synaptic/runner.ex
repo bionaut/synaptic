@@ -7,7 +7,7 @@ defmodule Synaptic.Runner do
   use GenServer
   require Logger
 
-  alias Synaptic.{Registry, Step}
+  alias Synaptic.{Registry, Step, Scorer}
   alias Phoenix.PubSub
 
   @pubsub Synaptic.PubSub
@@ -272,15 +272,22 @@ defmodule Synaptic.Runner do
   end
 
   defp handle_step_success(state, step, data) do
-    state
-    |> Map.update!(:context, fn ctx ->
-      ctx
-      |> Map.merge(data)
-      |> Map.delete(:human_input)
-    end)
-    |> increment_step()
-    |> push_history(%{step: step.name, status: :ok})
-    |> publish_event(%{event: :step_completed, step: step.name})
+    pre_context = state.context
+
+    new_state =
+      state
+      |> Map.update!(:context, fn ctx ->
+        ctx
+        |> Map.merge(data)
+        |> Map.delete(:human_input)
+      end)
+      |> increment_step()
+      |> push_history(%{step: step.name, status: :ok})
+      |> publish_event(%{event: :step_completed, step: step.name})
+
+    run_scorers_async(step, state.workflow, state.run_id, pre_context, new_state.context, data)
+
+    new_state
   end
 
   defp increment_step(state) do
@@ -383,15 +390,22 @@ defmodule Synaptic.Runner do
   defp process_async_result(state, _step, _result), do: state
 
   defp handle_async_result(step, {:ok, data}, state) when is_map(data) do
-    state
-    |> Map.update!(:context, fn ctx ->
-      ctx
-      |> Map.merge(data)
-      |> Map.delete(:human_input)
-    end)
-    |> push_history(%{step: step.name, status: :ok, async: true})
-    |> publish_event(%{event: :step_completed, step: step.name, async: true})
-    |> maybe_mark_completed()
+    pre_context = state.context
+
+    new_state =
+      state
+      |> Map.update!(:context, fn ctx ->
+        ctx
+        |> Map.merge(data)
+        |> Map.delete(:human_input)
+      end)
+      |> push_history(%{step: step.name, status: :ok, async: true})
+      |> publish_event(%{event: :step_completed, step: step.name, async: true})
+      |> maybe_mark_completed()
+
+    run_scorers_async(step, state.workflow, state.run_id, pre_context, new_state.context, data)
+
+    new_state
   end
 
   defp handle_async_result(step, {:error, reason}, state) do
@@ -629,4 +643,69 @@ defmodule Synaptic.Runner do
       end
     )
   end
+
+  defp run_scorers_async(%Step{} = step, workflow, run_id, pre_context, post_context, output)
+       when is_map(pre_context) and is_map(post_context) and is_map(output) do
+    scorer_specs = Scorer.normalize_scorer_specs(step.scorers)
+
+    Enum.each(scorer_specs, fn %{module: mod, opts: opts} ->
+      Task.start(fn ->
+        context = %Scorer.Context{
+          step: step,
+          workflow: workflow,
+          run_id: run_id,
+          pre_context: pre_context,
+          post_context: post_context,
+          output: output,
+          metadata: Map.new(opts)
+        }
+
+        :telemetry.span(
+          [:synaptic, :scorer],
+          %{
+            run_id: run_id,
+            workflow: workflow,
+            step_name: step.name,
+            scorer: mod
+          },
+          fn ->
+            {status, score, reason} =
+              try do
+                result = mod.score(context, context.metadata)
+                {:ok, result.score, result.reason}
+              rescue
+                error ->
+                  Logger.error(
+                    "scorer #{inspect(mod)} for step #{step.name} failed: #{inspect(error)}"
+                  )
+
+                  {:error, nil, Exception.message(error)}
+              catch
+                kind, error ->
+                  Logger.error(
+                    "scorer #{inspect(mod)} for step #{step.name} failed: #{inspect({kind, error})}"
+                  )
+
+                  {:error, nil, inspect({kind, error})}
+              end
+
+            {status,
+             %{
+               run_id: run_id,
+               workflow: workflow,
+               step_name: step.name,
+               scorer: mod,
+               status: status,
+               score: score,
+               reason: reason
+             }}
+          end
+        )
+      end)
+    end)
+
+    :ok
+  end
+
+  defp run_scorers_async(_step, _workflow, _run_id, _pre_context, _post_context, _output), do: :ok
 end

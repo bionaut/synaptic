@@ -303,6 +303,95 @@ If an async step fails, Synaptic applies the configured `:retry` budget. Once
 retries are exhausted the workflow transitions to `:failed`, even if later
 steps already ran.
 
+### Step-level scorers (quality & evaluation)
+
+Synaptic supports **step-level scorers** that evaluate the outcome of each step
+and emit metrics via Telemetry (similar in spirit to Mastra scorers).
+
+- Attach scorers to a step using the `:scorers` option:
+
+  ```elixir
+  defmodule MyWorkflow do
+    use Synaptic.Workflow
+
+    alias MyApp.Scorers.{UserDataCompleteness, WelcomeEmailTone}
+
+    step :collect_user_data,
+      scorers: [UserDataCompleteness] do
+      {:ok, %{user: %{name: "Jane", email: "jane@example.com"}}}
+    end
+
+    step :send_welcome_email,
+      scorers: [{WelcomeEmailTone, model: :gpt_4o_mini}] do
+      # your side effects / LLM calls here
+      {:ok, %{email_sent?: true}}
+    end
+
+    commit()
+  end
+  ```
+
+- Implement a scorer by conforming to the `Synaptic.Scorer` behaviour:
+
+  ```elixir
+  defmodule MyApp.Scorers.UserDataCompleteness do
+    @behaviour Synaptic.Scorer
+
+    alias Synaptic.Scorer.{Context, Result}
+
+    @impl true
+    def score(%Context{step: step, run_id: run_id, output: output}, _metadata) do
+      required = [:user]
+      present? = Enum.all?(required, &Map.has_key?(output, &1))
+
+      Result.new(
+        name: "user_data_completeness",
+        step: step.name,
+        run_id: run_id,
+        score: if(present?, do: 1.0, else: 0.0),
+        reason:
+          if present?,
+            do: "All required keys present: #{inspect(required)}",
+            else: "Missing required keys: #{inspect(required -- Map.keys(output))}"
+      )
+    end
+  end
+  ```
+
+Scorers are executed **asynchronously** after each successful step and emit a
+Telemetry span under `[:synaptic, :scorer]`. Your application can subscribe to
+these events to persist scores (e.g. to Postgres, Prometheus, or Braintrust) or
+build dashboards. See `Synaptic.Scorer` and `Synaptic.WorkflowScorerIntegrationTest`
+for more detailed examples.
+
+#### Sending scorer metrics to Braintrust
+
+You can forward scorer events directly to Braintrust (or any external eval
+service) from your host app by attaching a Telemetry handler:
+
+```elixir
+:telemetry.attach(
+  "synaptic-braintrust-scorers",
+  [:synaptic, :scorer, :stop],
+  fn _event, _measurements, metadata, _config ->
+    # Example shape – adapt to your Braintrust client / API
+    Braintrust.log_score(%{
+      run_id: metadata.run_id,
+      workflow: inspect(metadata.workflow),
+      step: Atom.to_string(metadata.step_name),
+      scorer: inspect(metadata.scorer),
+      score: metadata.score,
+      reason: metadata.reason
+    })
+  end,
+  nil
+)
+```
+
+As long as your Braintrust client exposes a `log_score/1` (or equivalent)
+function, this pattern lets Synaptic remain storage-agnostic while you push
+scores into Braintrust for dashboards, model comparisons, or regression tests.
+
 ### Stopping a run
 
 To cancel a workflow early (for example, if a human rejected it out-of-band),
