@@ -1,0 +1,9 @@
+name: "Workflow with Side Effects Test"
+workflow: "Synaptic.Dev.DemoWorkflow"
+input:
+  topic: "Testing Side Effects"
+skip_side_effects: true
+expectations:
+  status: "completed"
+  context:
+    topic: "Testing Side Effects"

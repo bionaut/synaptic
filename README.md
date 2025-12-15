@@ -696,6 +696,60 @@ expectations:
     "user.email": ".*@.*" # Nested path with regex
 ```
 
+#### Skipping Side Effects in Tests
+
+When testing workflows that contain side effects (database mutations, external API calls, file operations), you can skip these side effects using the `side_effect/1` macro in your workflow and the `skip_side_effects: true` option in your YAML test.
+
+**In your workflow**, wrap side effect code with the `side_effect/1` macro:
+
+```elixir
+defmodule MyWorkflow do
+  use Synaptic.Workflow
+
+  step :create_user do
+    user = %{name: context.name, email: context.email}
+
+    side_effect do
+      Database.insert(user)
+    end
+
+    {:ok, %{user: user}}
+  end
+
+  step :send_email do
+    side_effect default: {:ok, :sent} do
+      EmailService.send(context.user.email, "Welcome!")
+    end
+
+    {:ok, %{email_sent: true}}
+  end
+end
+```
+
+**In your YAML test**, add `skip_side_effects: true`:
+
+```yaml
+name: "Test user creation"
+workflow: "MyWorkflow"
+input:
+  name: "John Doe"
+  email: "john@example.com"
+skip_side_effects: true # Skip database and other side effects
+expectations:
+  status: "completed"
+  context:
+    user: ".*John.*"
+```
+
+When `skip_side_effects: true` is set:
+
+- All `side_effect/1` blocks are skipped
+- By default, skipped side effects return `:ok`
+- Use the `default:` option to return a specific value when skipped
+- Side effects execute normally when the flag is not set
+
+This allows you to test workflow logic and input/output transformations without requiring actual database connections or external services.
+
 #### Example Test Files
 
 Example test files are available in `test/fixtures/`:
@@ -703,6 +757,7 @@ Example test files are available in `test/fixtures/`:
 - `demo_workflow_test.yaml` - Full workflow execution
 - `demo_workflow_test_start_at_step.yaml` - Starting at a specific step
 - `simple_workflow_test.yaml` - Minimal test without expectations
+- `workflow_with_side_effects_test.yaml` - Example with side effects skipped
 
 #### Output Formats
 

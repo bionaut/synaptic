@@ -38,7 +38,8 @@ defmodule Synaptic.TestRunner.YamlParser do
          :ok <- validate_workflow_module(data),
          :ok <- validate_input(data),
          :ok <- validate_start_at_step(data),
-         :ok <- validate_expectations(data) do
+         :ok <- validate_expectations(data),
+         :ok <- validate_skip_side_effects(data) do
       {:ok, normalize_test_definition(data)}
     end
   end
@@ -94,13 +95,22 @@ defmodule Synaptic.TestRunner.YamlParser do
     end
   end
 
+  defp validate_skip_side_effects(data) do
+    case Map.get(data, "skip_side_effects") do
+      nil -> :ok
+      value when is_boolean(value) -> :ok
+      _ -> {:error, :invalid_skip_side_effects}
+    end
+  end
+
   defp normalize_test_definition(data) do
     %{
       name: Map.get(data, "name", "Unnamed test"),
       workflow: Map.get(data, "workflow"),
       input: normalize_input(Map.get(data, "input", %{})),
       start_at_step: normalize_start_at_step(Map.get(data, "start_at_step")),
-      expectations: normalize_expectations(Map.get(data, "expectations"))
+      expectations: normalize_expectations(Map.get(data, "expectations")),
+      skip_side_effects: Map.get(data, "skip_side_effects", false)
     }
   end
 

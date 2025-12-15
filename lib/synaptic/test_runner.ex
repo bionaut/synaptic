@@ -127,6 +127,14 @@ defmodule Synaptic.TestRunner do
   end
 
   defp start_workflow(workflow_module, test_definition) do
+    # Inject __skip_side_effects__ flag into context if specified in YAML
+    input =
+      if Map.get(test_definition, :skip_side_effects, false) do
+        Map.put(test_definition.input, :__skip_side_effects__, true)
+      else
+        test_definition.input
+      end
+
     opts = []
 
     opts =
@@ -136,7 +144,7 @@ defmodule Synaptic.TestRunner do
         opts
       end
 
-    case Synaptic.start(workflow_module, test_definition.input, opts) do
+    case Synaptic.start(workflow_module, input, opts) do
       {:ok, run_id} -> {:ok, run_id}
       {:error, reason} -> {:error, {:workflow_start_failed, reason}}
     end

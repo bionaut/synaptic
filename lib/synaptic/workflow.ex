@@ -105,6 +105,45 @@ defmodule Synaptic.Workflow do
      }}
   end
 
+  @doc """
+  Marks a code block as a side effect (e.g., database mutations, external API calls).
+  When `skip_side_effects: true` is set in test configuration, the side effect
+  is skipped and returns a default value instead.
+
+  ## Options
+
+    * `:default` - Value to return when side effect is skipped (default: `:ok`)
+
+  ## Examples
+
+      step :save_user do
+        side_effect do
+          Database.insert(context.user)
+        end
+
+        {:ok, %{user_saved: true}}
+      end
+
+      step :send_email do
+        side_effect default: {:ok, :sent} do
+          EmailService.send(context.user.email, "Welcome!")
+        end
+
+        {:ok, %{email_sent: true}}
+      end
+  """
+  defmacro side_effect(opts \\ [], do: block) do
+    default_value = Keyword.get(opts, :default, :ok)
+
+    quote do
+      if Map.get(var!(context), :__skip_side_effects__, false) do
+        unquote(default_value)
+      else
+        unquote(block)
+      end
+    end
+  end
+
   defmacro __before_compile__(env) do
     steps = env.module |> Module.get_attribute(:synaptic_steps) |> Enum.reverse()
     commit? = Module.get_attribute(env.module, :synaptic_commit)
