@@ -306,7 +306,10 @@ defmodule Synaptic.Runner do
     # Note: parallel tasks don't have access to run_id/step_name for streaming
     # This is a limitation - parallel steps can't use streaming
     stream =
-      Task.async_stream(tasks, &run_parallel_task(&1, context), timeout: :infinity, ordered: false)
+      Task.async_stream(tasks, &run_parallel_task(&1, context),
+        timeout: :infinity,
+        ordered: false
+      )
 
     Enum.reduce_while(stream, {:ok, %{}}, fn
       {:ok, {:ok, data}}, {:ok, acc} when is_map(data) ->
@@ -581,12 +584,49 @@ defmodule Synaptic.Runner do
   end
 
   defp run_step_fun(step, workflow, context) do
-    try do
-      Step.run(step, workflow, context)
-    catch
-      kind, reason ->
-        Logger.error("step #{step.name} crashed: #{inspect({kind, reason})}")
-        {:error, {kind, reason}}
-    end
+    # Emit a Telemetry span around every step execution so host applications
+    # can observe per-step timings and outcomes.
+    #
+    # Events:
+    #   [:synaptic, :step, :start]
+    #   [:synaptic, :step, :stop]
+    #
+    # Start metadata:
+    #   - :run_id    - workflow run id (when available in context)
+    #   - :workflow  - workflow module
+    #   - :step_name - step name (atom)
+    #   - :type      - step type (:default | :parallel | :async)
+    #
+    # Stop metadata adds:
+    #   - :status    - :ok | :suspend | :error | :unknown
+    :telemetry.span(
+      [:synaptic, :step],
+      %{
+        run_id: Map.get(context, :__run_id__),
+        workflow: workflow,
+        step_name: step.name,
+        type: Map.get(step, :type, :default)
+      },
+      fn ->
+        result =
+          try do
+            Step.run(step, workflow, context)
+          catch
+            kind, reason ->
+              Logger.error("step #{step.name} crashed: #{inspect({kind, reason})}")
+              {:error, {kind, reason}}
+          end
+
+        status =
+          case result do
+            {:ok, _} -> :ok
+            {:suspend, _} -> :suspend
+            {:error, _} -> :error
+            _ -> :unknown
+          end
+
+        {result, %{status: status}}
+      end
+    )
   end
 end
