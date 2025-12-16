@@ -25,7 +25,7 @@ OTP application and where to look when extending it.
   - Provides `commit/0` for marking the workflow complete and
     `suspend_for_human/2` for pausing.
   - Emits `__synaptic_definition__/0`, which returns `%{module: workflow_module,
-    steps: [%Synaptic.Step{}, ...]}` consumed by the engine.
+steps: [%Synaptic.Step{}, ...]}` consumed by the engine.
 - `Synaptic.Step` defines the struct + helper for calling back into the generated
   handlers.
 
@@ -110,10 +110,20 @@ and available, the runtime can execute it via `Synaptic.start/3`.
     final assistant response is produced.
 - `Synaptic.Tools.OpenAI` is the default adapter. It builds a Finch request with a
   JSON body, sends it via `Synaptic.Finch`, and returns either `{:ok, content}` or
-  `{:error, reason}`. Lack of an API key raises so misconfiguration fails fast.
-  When `stream: true` is passed, it uses `Finch.stream/4` to handle Server-Sent
-  Events (SSE) from OpenAI, parsing chunks and accumulating content. Streaming
-  automatically falls back to non-streaming when tools are provided.
+  `{:ok, content, %{usage: %{...}}}` (with usage metrics). Lack of an API key raises
+  so misconfiguration fails fast. When `stream: true` is passed, it uses
+  `Finch.stream/4` to handle Server-Sent Events (SSE) from OpenAI, parsing chunks
+  and accumulating content. Streaming automatically falls back to non-streaming when
+  tools are provided.
+- **Usage metrics**: Adapters can optionally return usage information (token counts,
+  cost, etc.) in a third tuple element: `{:ok, content, %{usage: %{...}}}`. The
+  OpenAI adapter automatically extracts `prompt_tokens`, `completion_tokens`, and
+  `total_tokens` from API responses. This information is included in Telemetry events
+  and can be used by eval integrations.
+- **Telemetry**: All LLM calls are instrumented with Telemetry spans under
+  `[:synaptic, :llm]`, emitting `:start`, `:stop`, and `:exception` events with
+  metadata including `run_id`, `step_name`, `adapter`, `model`, `stream`, and
+  optional `usage` metrics.
 
 ## Streaming implementation
 
@@ -151,3 +161,18 @@ Synaptic.resume(run_id, %{approved: true})
 
 That sample mirrors how real workflows behave and is a good starting point for
 experimentation.
+
+## Eval integrations
+
+- `Synaptic.Eval.Integration` is a behaviour for integrating with 3rd party eval
+  services (Braintrust, LangSmith, etc.). Implementations observe LLM calls and
+  scorer results via Telemetry events and can combine them into complete eval records.
+- The integration behaviour provides optional callbacks:
+  - `on_llm_call/4` - called when an LLM call completes (via `[:synaptic, :llm, :stop]`)
+  - `on_scorer_result/4` - called when a scorer completes (via `[:synaptic, :scorer, :stop]`)
+  - `on_step_complete/4` - called when a step completes (via `[:synaptic, :step, :stop]`)
+- Use `Synaptic.Eval.Integration.attach/2` to set up Telemetry handlers that call
+  your integration's callbacks. This allows users to implement their own eval
+  integrations without modifying Synaptic core.
+- LLM call metadata includes usage metrics (token counts) when available from
+  adapters, allowing eval services to track costs and usage alongside quality scores.

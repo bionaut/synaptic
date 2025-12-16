@@ -236,6 +236,7 @@ defmodule Synaptic.WorkflowExecutionTest do
 
   test "start at last step" do
     parent = self()
+
     context = %{
       test_pid: parent,
       first_result: "precomputed",

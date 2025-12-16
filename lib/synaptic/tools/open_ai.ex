@@ -107,14 +107,17 @@ defmodule Synaptic.Tools.OpenAI do
           {:cont, new_acc}
 
         :done, acc ->
-          {:ok, acc.accumulated, acc}
+          {:ok, acc.accumulated}
 
         {:error, reason}, _acc ->
           {:error, reason}
       end)
 
+    # For streaming, usage info is not available in chunks
+    # OpenAI streaming responses don't include usage in chunks, so we return without it
+    # If usage is needed for streaming, it would need to be tracked separately
     case result do
-      {:ok, accumulated, _acc} -> {:ok, accumulated}
+      {:ok, accumulated} -> {:ok, accumulated}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -214,17 +217,39 @@ defmodule Synaptic.Tools.OpenAI do
          %{"message" => message} <- choice,
          {:ok, content} <- decode_content(message_content(message), response_format) do
       tool_calls = tool_calls_from(message)
+      usage = extract_usage(decoded)
 
-      if tool_calls == [] do
-        {:ok, content}
+      result =
+        if tool_calls == [] do
+          {:ok, content}
+        else
+          {:ok, %{content: content, tool_calls: tool_calls}}
+        end
+
+      # Append usage metrics if available
+      if usage != %{} do
+        case result do
+          {:ok, content_or_map} -> {:ok, content_or_map, %{usage: usage}}
+        end
       else
-        {:ok, %{content: content, tool_calls: tool_calls}}
+        result
       end
     else
       {:error, reason} -> {:error, reason}
       _ -> {:error, :invalid_response}
     end
   end
+
+  defp extract_usage(%{"usage" => usage}) when is_map(usage) do
+    %{
+      prompt_tokens: Map.get(usage, "prompt_tokens") || Map.get(usage, :prompt_tokens) || 0,
+      completion_tokens:
+        Map.get(usage, "completion_tokens") || Map.get(usage, :completion_tokens) || 0,
+      total_tokens: Map.get(usage, "total_tokens") || Map.get(usage, :total_tokens) || 0
+    }
+  end
+
+  defp extract_usage(_), do: %{}
 
   defp message_content(message) do
     content = Map.get(message, :content) || Map.get(message, "content")

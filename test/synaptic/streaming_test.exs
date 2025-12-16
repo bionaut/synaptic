@@ -50,7 +50,9 @@ defmodule Synaptic.StreamingTest do
 
   describe "SSE event parsing" do
     test "parse_sse_events splits on double newline" do
-      data = ~s(data: {"choices":[{"delta":{"content":"Hello"}}]}\n\ndata: {"choices":[{"delta":{"content":" world"}}]}\n\n)
+      data =
+        ~s(data: {"choices":[{"delta":{"content":"Hello"}}]}\n\ndata: {"choices":[{"delta":{"content":" world"}}]}\n\n)
+
       {remaining, events, accumulated} = parse_sse_events_internal(data, "")
 
       assert remaining == ""
@@ -59,7 +61,9 @@ defmodule Synaptic.StreamingTest do
     end
 
     test "parse_sse_events handles incomplete buffer" do
-      data = ~s(data: {"choices":[{"delta":{"content":"Hello"}}]}\n\ndata: {"choices":[{"delta":{"content":" wo)
+      data =
+        ~s(data: {"choices":[{"delta":{"content":"Hello"}}]}\n\ndata: {"choices":[{"delta":{"content":" wo)
+
       {remaining, events, accumulated} = parse_sse_events_internal(data, "")
 
       assert remaining == ~s(data: {"choices":[{"delta":{"content":" wo)
@@ -116,12 +120,14 @@ defmodule Synaptic.StreamingTest do
   # Helper functions to test internal parsing logic
   # These mirror the private functions in OpenAI module
   defp parse_sse_chunk_internal("data: [DONE]"), do: nil
+
   defp parse_sse_chunk_internal("data: " <> json) do
     case Jason.decode(json) do
       {:ok, decoded} -> decoded
       _ -> nil
     end
   end
+
   defp parse_sse_chunk_internal(""), do: nil
   defp parse_sse_chunk_internal(_), do: nil
 
@@ -129,9 +135,11 @@ defmodule Synaptic.StreamingTest do
        when is_binary(content) do
     content
   end
+
   defp extract_delta_content_internal(%{"choices" => [%{"delta" => %{}} | _]}) do
     nil
   end
+
   defp extract_delta_content_internal(_), do: nil
 
   defp parse_sse_events_internal(data, accumulated) do

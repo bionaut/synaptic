@@ -35,10 +35,25 @@ defmodule Synaptic.Tools.Adapter do
   ## Returns
 
     * `{:ok, content}` - Success with content (string or decoded JSON map)
+    * `{:ok, content, %{usage: usage_map}}` - Success with content and optional usage metrics (adapter-specific)
     * `{:ok, %{content: content, tool_calls: tool_calls}}` - Success with tool calls (atom keys)
+    * `{:ok, %{content: content, tool_calls: tool_calls}, %{usage: usage_map}}` - Success with tool calls and usage metrics
     * `{:ok, %{"content" => content, "tool_calls" => tool_calls}}` - Success with tool calls (string keys)
+    * `{:ok, %{"content" => content, "tool_calls" => tool_calls}, %{usage: usage_map}}` - Success with tool calls and usage metrics
     * `{:ok, accumulated}` - Success for streaming (final accumulated content as string)
+    * `{:ok, accumulated, %{usage: usage_map}}` - Success for streaming with usage metrics
     * `{:error, reason}` - Error tuple
+
+  ## Usage Metrics
+
+  Adapters may optionally return usage metrics (e.g., token counts, cost) in a third tuple element.
+  The usage map format is adapter-specific but commonly includes:
+    * `:prompt_tokens` - Number of tokens in the prompt
+    * `:completion_tokens` - Number of tokens in the completion
+    * `:total_tokens` - Total tokens used
+    * Other adapter-specific metrics (cost, model-specific fields, etc.)
+
+  If usage metrics are not available, adapters should return the standard two-element tuple format.
 
   ## Tool Calls Format
 
@@ -57,10 +72,13 @@ defmodule Synaptic.Tools.Adapter do
   """
   @callback chat(messages :: list(map()), opts :: keyword()) ::
               {:ok, String.t() | map()}
+              | {:ok, String.t() | map(), %{usage: map()}}
               | {:ok, %{content: String.t() | map(), tool_calls: list(map())}}
+              | {:ok, %{content: String.t() | map(), tool_calls: list(map())}, %{usage: map()}}
               | {:ok, %{String.t() => String.t() | map(), String.t() => list(map())}}
+              | {:ok, %{String.t() => String.t() | map(), String.t() => list(map())},
+                 %{usage: map()}}
               | {:error, term()}
-
 
   @doc """
   Macro to implement the Adapter behaviour.
@@ -70,5 +88,4 @@ defmodule Synaptic.Tools.Adapter do
       @behaviour Synaptic.Tools.Adapter
     end
   end
-
 end

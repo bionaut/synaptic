@@ -392,6 +392,64 @@ As long as your Braintrust client exposes a `log_score/1` (or equivalent)
 function, this pattern lets Synaptic remain storage-agnostic while you push
 scores into Braintrust for dashboards, model comparisons, or regression tests.
 
+#### Eval Integrations
+
+For a more structured approach to integrating with eval services, implement the
+`Synaptic.Eval.Integration` behaviour. This provides a standardized way to observe
+both LLM calls and scorer results:
+
+```elixir
+defmodule MyApp.Eval.BraintrustIntegration do
+  @behaviour Synaptic.Eval.Integration
+
+  @impl Synaptic.Eval.Integration
+  def on_llm_call(_event, measurements, metadata, config) do
+    usage = Map.get(metadata, :usage, %{})
+
+    Braintrust.log({
+      run_id: metadata.run_id,
+      step: metadata.step_name,
+      model: metadata.model,
+      prompt_tokens: Map.get(usage, :prompt_tokens, 0),
+      completion_tokens: Map.get(usage, :completion_tokens, 0),
+      total_tokens: Map.get(usage, :total_tokens, 0),
+      duration_ms: System.convert_time_unit(measurements.duration, :native, :millisecond)
+    })
+  end
+
+  @impl Synaptic.Eval.Integration
+  def on_scorer_result(_event, _measurements, metadata, _config) do
+    Braintrust.log_score({
+      run_id: metadata.run_id,
+      step: metadata.step_name,
+      scorer: metadata.scorer,
+      score: metadata.score,
+      reason: metadata.reason
+    })
+  end
+end
+```
+
+Then attach it in your application startup:
+
+```elixir
+defmodule MyApp.Application do
+  def start(_type, _args) do
+    # ... other setup ...
+
+    Synaptic.Eval.Integration.attach(MyApp.Eval.BraintrustIntegration, %{
+      api_key: System.get_env("BRAINTRUST_API_KEY"),
+      project: "my-project"
+    })
+
+    # ... rest of startup ...
+  end
+end
+```
+
+See `Synaptic.Eval.Integration` for more details on combining LLM metrics with
+scorer results.
+
 ### Stopping a run
 
 To cancel a workflow early (for example, if a human rejected it out-of-band),
@@ -527,6 +585,63 @@ def metrics do
   ]
 end
 ```
+
+#### LLM call metrics
+
+Every LLM call made via `Synaptic.Tools.chat/2` is wrapped in a Telemetry span:
+
+- **Events**
+  - `[:synaptic, :llm, :start]`
+  - `[:synaptic, :llm, :stop]`
+  - `[:synaptic, :llm, :exception]` (if the call crashes)
+- **Measurements (on `:stop` / `:exception`)**
+  - `:duration` – native units (convert to ms with `System.convert_time_unit/3`)
+  - `:prompt_tokens` – Number of tokens in the prompt (if available from adapter)
+  - `:completion_tokens` – Number of tokens in the completion (if available)
+  - `:total_tokens` – Total tokens used (if available)
+- **Metadata**
+  - `:run_id` – workflow run id (when available)
+  - `:step_name` – step name (atom, when available)
+  - `:adapter` – adapter module (e.g., `Synaptic.Tools.OpenAI`)
+  - `:model` – model name/identifier
+  - `:stream` – boolean indicating if streaming was used
+  - `:usage` – optional usage map with token counts (adapter-specific)
+
+Example: log all LLM calls with token usage:
+
+```elixir
+:telemetry.attach(
+  "synaptic-llm-logger",
+  [:synaptic, :llm, :stop],
+  fn _event, measurements, metadata, _config ->
+    duration_ms =
+      System.convert_time_unit(measurements.duration, :native, :millisecond)
+
+    usage = Map.get(metadata, :usage, %{})
+
+    IO.inspect(
+      %{
+        run_id: metadata.run_id,
+        step: metadata.step_name,
+        adapter: metadata.adapter,
+        model: metadata.model,
+        stream: metadata.stream,
+        duration_ms: duration_ms,
+        prompt_tokens: Map.get(usage, :prompt_tokens, 0),
+        completion_tokens: Map.get(usage, :completion_tokens, 0),
+        total_tokens: Map.get(usage, :total_tokens, 0)
+      },
+      label: "Synaptic LLM call"
+    )
+  end,
+  nil
+)
+```
+
+**Usage Metrics**: Adapters may optionally return usage metrics (token counts, cost, etc.)
+in their responses. The OpenAI adapter automatically extracts and returns usage information
+from API responses. Other adapters can implement this by returning a three-element tuple:
+`{:ok, content, %{usage: %{...}}}`. See `Synaptic.Tools.Adapter` for details.
 
 #### Side-effect metrics
 

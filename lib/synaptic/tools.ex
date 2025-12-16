@@ -33,6 +33,7 @@ defmodule Synaptic.Tools do
     # If tools are provided and streaming is requested, fall back to non-streaming
     if stream_enabled and tool_specs != [] do
       require Logger
+
       Logger.warning(
         "Streaming requested but tools are provided. Falling back to non-streaming mode (OpenAI limitation)."
       )
@@ -56,17 +57,29 @@ defmodule Synaptic.Tools do
     end
   end
 
-  defp do_chat(adapter, messages, opts, []), do: adapter.chat(messages, opts)
+  defp do_chat(adapter, messages, opts, []),
+    do: do_chat_with_telemetry(adapter, messages, opts, [])
 
   defp do_chat(adapter, messages, opts, tools) do
     tool_map = Map.new(tools, &{&1.name, &1})
 
-    case adapter.chat(messages, opts) do
+    case do_chat_with_telemetry(adapter, messages, opts, tools) do
       {:ok, %{tool_calls: tool_calls} = message} when is_list(tool_calls) and tool_calls != [] ->
         new_messages = apply_tool_calls(messages, message, tool_map)
         do_chat(adapter, new_messages, opts, tools)
 
+      {:ok, %{tool_calls: tool_calls} = message, _usage}
+      when is_list(tool_calls) and tool_calls != [] ->
+        new_messages = apply_tool_calls(messages, message, tool_map)
+        do_chat(adapter, new_messages, opts, tools)
+
       {:ok, %{"tool_calls" => tool_calls} = message}
+      when is_list(tool_calls) and
+             tool_calls != [] ->
+        new_messages = apply_tool_calls(messages, message, tool_map)
+        do_chat(adapter, new_messages, opts, tools)
+
+      {:ok, %{"tool_calls" => tool_calls} = message, _usage}
       when is_list(tool_calls) and
              tool_calls != [] ->
         new_messages = apply_tool_calls(messages, message, tool_map)
@@ -77,12 +90,79 @@ defmodule Synaptic.Tools do
     end
   end
 
+  defp do_chat_with_telemetry(adapter, messages, opts, _tools) do
+    run_id = Keyword.get(opts, :run_id) || get_from_context(:__run_id__)
+    step_name = Keyword.get(opts, :step_name) || get_from_context(:__step_name__)
+    model = Keyword.get(opts, :model) || "unknown"
+    stream = Keyword.get(opts, :stream, false)
+
+    metadata = %{
+      run_id: run_id,
+      step_name: step_name,
+      adapter: adapter,
+      model: model,
+      stream: stream
+    }
+
+    result =
+      :telemetry.span(
+        [:synaptic, :llm],
+        metadata,
+        fn ->
+          adapter_result = adapter.chat(messages, opts)
+          updated_metadata = extract_telemetry_metadata(adapter_result, metadata)
+
+          # Return the (possibly usage-stripped) result alongside updated metadata.
+          # Telemetry will merge the updated metadata into the stop event, so
+          # handlers on [:synaptic, :llm, :stop] see token usage fields.
+          {strip_usage(adapter_result), updated_metadata}
+        end
+      )
+
+    result
+  end
+
+  defp extract_telemetry_metadata({:ok, _content, %{usage: usage}}, metadata)
+       when is_map(usage) do
+    # Add usage to metadata and also add token counts as separate fields for easier access
+    metadata
+    |> Map.put(:usage, usage)
+    |> Map.put(
+      :prompt_tokens,
+      Map.get(usage, :prompt_tokens) || Map.get(usage, "prompt_tokens") || 0
+    )
+    |> Map.put(
+      :completion_tokens,
+      Map.get(usage, :completion_tokens) || Map.get(usage, "completion_tokens") || 0
+    )
+    |> Map.put(
+      :total_tokens,
+      Map.get(usage, :total_tokens) || Map.get(usage, "total_tokens") || 0
+    )
+  end
+
+  defp extract_telemetry_metadata({:ok, _content}, metadata), do: metadata
+  defp extract_telemetry_metadata({:error, _reason}, metadata), do: metadata
+
+  defp strip_usage({:ok, content, %{usage: _usage}}), do: {:ok, content}
+  defp strip_usage({:ok, content, _other}), do: {:ok, content}
+  defp strip_usage(other), do: other
+
   defp do_chat_stream(adapter, messages, opts) do
     # Extract run_id and step_name from context (injected by Runner)
     # These are passed via opts[:context] or can be extracted from a process dictionary
     # For now, we'll get them from opts - they should be passed by the step
     run_id = Keyword.get(opts, :run_id) || get_from_context(:__run_id__)
     step_name = Keyword.get(opts, :step_name) || get_from_context(:__step_name__)
+    model = Keyword.get(opts, :model) || "unknown"
+
+    metadata = %{
+      run_id: run_id,
+      step_name: step_name,
+      adapter: adapter,
+      model: model,
+      stream: true
+    }
 
     # Create on_chunk callback that publishes PubSub events
     on_chunk = fn chunk, accumulated ->
@@ -91,18 +171,53 @@ defmodule Synaptic.Tools do
 
     adapter_opts = Keyword.put(opts, :on_chunk, on_chunk)
 
-    case adapter.chat(messages, adapter_opts) do
-      {:ok, accumulated} = result ->
-        # Publish stream_done event
-        if run_id do
-          publish_stream_done(run_id, step_name, accumulated)
+    result =
+      :telemetry.span(
+        [:synaptic, :llm],
+        metadata,
+        fn ->
+          adapter_result = adapter.chat(messages, adapter_opts)
+
+          case adapter_result do
+            {:ok, accumulated} = ok_result ->
+              # Publish stream_done event
+              if run_id do
+                publish_stream_done(run_id, step_name, accumulated)
+              end
+
+              {ok_result, metadata}
+
+            {:ok, accumulated, %{usage: usage}} = ok_result ->
+              # Publish stream_done event
+              if run_id do
+                publish_stream_done(run_id, step_name, accumulated)
+              end
+
+              updated_metadata =
+                metadata
+                |> Map.put(:usage, usage)
+                |> Map.put(
+                  :prompt_tokens,
+                  Map.get(usage, :prompt_tokens) || Map.get(usage, "prompt_tokens") || 0
+                )
+                |> Map.put(
+                  :completion_tokens,
+                  Map.get(usage, :completion_tokens) || Map.get(usage, "completion_tokens") || 0
+                )
+                |> Map.put(
+                  :total_tokens,
+                  Map.get(usage, :total_tokens) || Map.get(usage, "total_tokens") || 0
+                )
+
+              {ok_result, updated_metadata}
+
+            error ->
+              {error, metadata}
+          end
         end
+      )
 
-        result
-
-      error ->
-        error
-    end
+    result
   end
 
   # Helper to get values from process dictionary (set by Runner)
