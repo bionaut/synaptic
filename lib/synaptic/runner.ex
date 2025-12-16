@@ -12,6 +12,9 @@ defmodule Synaptic.Runner do
 
   @pubsub Synaptic.PubSub
 
+  # Grace period before shutting down a runner in a terminal state (1 minute)
+  @shutdown_grace_period_ms 60_000
+
   @type state :: %{
           run_id: String.t(),
           workflow: module(),
@@ -167,8 +170,10 @@ defmodule Synaptic.Runner do
               state
               |> push_history(%{event: :completed})
               |> publish_event(%{event: :completed})
+              |> Map.put(:status, :completed)
+              |> schedule_shutdown_timer()
 
-            {:halt, Map.put(new_state, :status, :completed)}
+            {:halt, new_state}
         end
 
       step ->
@@ -189,6 +194,17 @@ defmodule Synaptic.Runner do
           {:ok, data} ->
             new_state = handle_step_success(state, step, data)
             {:continue, new_state}
+
+          {:stop, reason} ->
+            new_state =
+              state
+              |> Map.put(:status, :stopped)
+              |> Map.put(:last_error, nil)
+              |> push_history(%{event: :stopped, reason: reason})
+              |> publish_event(%{event: :stopped, reason: reason})
+              |> schedule_shutdown_timer()
+
+            {:halt, new_state}
 
           {:error, reason} ->
             handle_step_error(step, reason, state)
@@ -243,6 +259,17 @@ defmodule Synaptic.Runner do
           |> push_history(%{step: step.name, status: :waiting, message: message})
           |> publish_event(%{event: :waiting_for_human, step: step.name, message: message})
           |> publish_event(%{event: :waiting_for_human, step: step.name})
+
+        {:halt, new_state}
+
+      {:stop, reason} ->
+        new_state =
+          state
+          |> Map.put(:status, :stopped)
+          |> Map.put(:last_error, nil)
+          |> push_history(%{event: :stopped, reason: reason})
+          |> publish_event(%{event: :stopped, reason: reason})
+          |> schedule_shutdown_timer()
 
         {:halt, new_state}
 
@@ -325,6 +352,9 @@ defmodule Synaptic.Runner do
       {:ok, {:ok, invalid}}, _acc ->
         {:halt, {:error, {:invalid_parallel_task_return, {:ok, invalid}}}}
 
+      {:ok, {:stop, reason}}, _acc ->
+        {:halt, {:stop, reason}}
+
       {:ok, {:error, reason}}, _acc ->
         {:halt, {:error, reason}}
 
@@ -343,6 +373,16 @@ defmodule Synaptic.Runner do
   defp run_parallel_task(_other, _context), do: {:error, :invalid_parallel_task}
 
   defp async_pending?(state), do: map_size(state.async_tasks) > 0
+
+  # Schedules process termination after a grace period when in a terminal state.
+  # This allows inspect/1 and history/1 to still work for a short time after completion.
+  defp schedule_shutdown_timer(state) do
+    if state.status in [:completed, :failed, :stopped] and not async_pending?(state) do
+      Process.send_after(self(), :shutdown_after_grace_period, @shutdown_grace_period_ms)
+    end
+
+    state
+  end
 
   @impl true
   def handle_info({:async_step_result, pid, result}, state) do
@@ -383,6 +423,15 @@ defmodule Synaptic.Runner do
     end
   end
 
+  def handle_info(:shutdown_after_grace_period, state) do
+    if state.status in [:completed, :failed, :stopped] and not async_pending?(state) do
+      {:stop, :normal, state}
+    else
+      # State changed (e.g. resumed), don't shut down
+      {:noreply, state}
+    end
+  end
+
   defp process_async_result(%{status: :running} = state, step, result) do
     handle_async_result(step, result, state)
   end
@@ -406,6 +455,17 @@ defmodule Synaptic.Runner do
     run_scorers_async(step, state.workflow, state.run_id, pre_context, new_state.context, data)
 
     new_state
+  end
+
+  defp handle_async_result(step, {:stop, reason}, state) do
+    _ = step
+
+    state
+    |> Map.put(:status, :stopped)
+    |> Map.put(:last_error, nil)
+    |> push_history(%{event: :stopped, reason: reason})
+    |> publish_event(%{event: :stopped, reason: reason})
+    |> schedule_shutdown_timer()
   end
 
   defp handle_async_result(step, {:error, reason}, state) do
@@ -458,6 +518,7 @@ defmodule Synaptic.Runner do
         |> Map.put(:status, :failed)
         |> Map.put(:last_error, reason)
         |> publish_event(%{event: :failed, step: step.name, reason: reason})
+        |> schedule_shutdown_timer()
     end
   end
 
@@ -468,6 +529,7 @@ defmodule Synaptic.Runner do
       |> push_history(%{event: :completed})
       |> publish_event(%{event: :completed})
       |> Map.put(:status, :completed)
+      |> schedule_shutdown_timer()
     else
       state
     end
@@ -545,6 +607,7 @@ defmodule Synaptic.Runner do
           |> Map.put(:status, :failed)
           |> Map.put(:last_error, reason)
           |> publish_event(%{event: :failed, step: step.name, reason: reason})
+          |> schedule_shutdown_timer()
 
         {:halt, failed_state}
     end

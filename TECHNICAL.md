@@ -56,6 +56,15 @@ steps: [%Synaptic.Step{}, ...]}` consumed by the engine.
   - Suspension is represented by setting `status: :waiting_for_human` and
     storing `%{step: ..., resume_schema: ...}` in `waiting`. `resume/2` injects a
     `%{human_input: payload}` into context and continues the step loop.
+  - A step can **intentionally stop** a run early by returning `{:stop, reason}`
+    instead of `{:ok, map}` / `{:suspend, info}` / `{:error, reason}`. In that case
+    the runner:
+    - Sets `status: :stopped`
+    - Appends `%{event: :stopped, reason: reason}` to history
+    - Publishes a `:stopped` PubSub event with the same reason
+    - Does **not** consume the step's retry budget (no retries are attempted)
+      This applies to sequential, async, and parallel steps (for parallel steps, the
+      first task that returns `{:stop, reason}` wins and stops the run).
   - Every state transition publishes an event on `Synaptic.PubSub` (topic
     `"synaptic:run:" <> run_id`) so UIs can observe `:waiting_for_human`,
     `:resumed`, `:step_completed`, `:retrying`, `:failed`, etc. Each event

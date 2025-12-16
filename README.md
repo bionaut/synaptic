@@ -463,6 +463,28 @@ The optional second argument becomes the `:reason` in the PubSub event and
 history entry. `Synaptic.stop/2` returns `:ok` if the run was alive and
 `{:error, :not_found}` otherwise.
 
+You can also stop a run **from inside a workflow step** by returning
+`{:stop, reason}` from the step handler:
+
+```elixir
+step :validate do
+  if valid?(context) do
+    {:ok, %{validated: true}}
+  else
+    # Stop the workflow early with a domain-specific reason
+    {:stop, :validation_failed}
+  end
+end
+```
+
+This works for regular `step/3`, `async_step/3`, and `parallel_step/3`:
+
+- In all cases, `{:stop, reason}` marks the run as `:stopped`, appends a
+  `%{event: :stopped, reason: reason}` entry to history, and publishes a
+  corresponding PubSub event (just like `Synaptic.stop/2`).
+- **Retries are not applied** for `{:stop, reason}` – it is treated as an
+  intentional, terminal outcome rather than an error.
+
 ### Dev-only demo workflow
 
 When running with `MIX_ENV=dev`, the module `Synaptic.Dev.DemoWorkflow` is loaded

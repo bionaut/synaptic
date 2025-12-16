@@ -132,6 +132,66 @@ defmodule Synaptic.WorkflowExecutionTest do
     commit()
   end
 
+  defmodule StopSequentialWorkflow do
+    use Synaptic.Workflow
+
+    step :validate do
+      {:stop, :validation_failed}
+    end
+
+    step :should_not_run do
+      send(context.test_pid, :should_not_run)
+      {:ok, %{}}
+    end
+
+    commit()
+  end
+
+  defmodule StopAsyncWorkflow do
+    use Synaptic.Workflow
+
+    step :prepare do
+      send(context.test_pid, {:step, :prepare})
+      {:ok, %{order: [:prepare]}}
+    end
+
+    async_step :maybe_stop, retry: 3 do
+      send(context.test_pid, :async_started)
+      {:stop, :user_rejected}
+    end
+
+    step :after_async do
+      send(context.test_pid, :after_async_should_not_run)
+      {:ok, %{after: true}}
+    end
+
+    commit()
+  end
+
+  defmodule StopParallelWorkflow do
+    use Synaptic.Workflow
+
+    parallel_step :generate_parts do
+      [
+        fn ctx ->
+          send(ctx.test_pid, {:task_started, :title})
+          {:ok, %{title: "Title for #{ctx.base}"}}
+        end,
+        fn ctx ->
+          send(ctx.test_pid, {:task_started, :stopper})
+          {:stop, :abort}
+        end
+      ]
+    end
+
+    step :after_parallel do
+      send(context.test_pid, :after_parallel_should_not_run)
+      {:ok, %{after: true}}
+    end
+
+    commit()
+  end
+
   test "workflow suspends and resumes" do
     {:ok, run_id} = Synaptic.start(ApprovalWorkflow, %{})
 
@@ -157,6 +217,21 @@ defmodule Synaptic.WorkflowExecutionTest do
     assert snapshot.last_error == :boom
     history = Synaptic.history(run_id)
     assert Enum.count(Enum.filter(history, &(&1[:status] == :error))) >= 1
+  end
+
+  test "sequential {:stop, reason} stops the workflow without running later steps" do
+    parent = self()
+    {:ok, run_id} = Synaptic.start(StopSequentialWorkflow, %{test_pid: parent})
+
+    snapshot = wait_for(run_id, :stopped)
+
+    assert snapshot.status == :stopped
+    assert snapshot.current_step == :validate
+
+    history = Synaptic.history(run_id)
+    assert Enum.any?(history, &(&1[:event] == :stopped and &1[:reason] == :validation_failed))
+
+    refute_receive :should_not_run, 100
   end
 
   test "stop halts a workflow and emits event" do
@@ -185,6 +260,25 @@ defmodule Synaptic.WorkflowExecutionTest do
     assert_receive {:task_started, :metadata}, 500
   end
 
+  test "parallel {:stop, reason} stops the workflow and does not run later steps" do
+    parent = self()
+    {:ok, run_id} = Synaptic.start(StopParallelWorkflow, %{base: 5, test_pid: parent})
+
+    # At least one task should start
+    assert_receive {:task_started, :title}, 500
+    assert_receive {:task_started, :stopper}, 500
+
+    snapshot = wait_for(run_id, :stopped)
+
+    assert snapshot.status == :stopped
+
+    history = Synaptic.history(run_id)
+    assert Enum.any?(history, &(&1[:event] == :stopped and &1[:reason] == :abort))
+
+    # Ensure step after parallel did not run
+    refute_receive :after_parallel_should_not_run, 100
+  end
+
   test "async steps continue the workflow while running in the background" do
     parent = self()
     {:ok, run_id} = Synaptic.start(AsyncWorkflow, %{test_pid: parent})
@@ -210,6 +304,26 @@ defmodule Synaptic.WorkflowExecutionTest do
     snapshot = wait_for(run_id, :failed)
     assert snapshot.last_error == :boom
     assert snapshot.context[:after]
+  end
+
+  test "async {:stop, reason} stops the workflow without retries" do
+    parent = self()
+    {:ok, run_id} = Synaptic.start(StopAsyncWorkflow, %{test_pid: parent})
+
+    assert_receive {:step, :prepare}, 500
+    assert_receive :async_started, 500
+
+    snapshot = wait_for(run_id, :stopped)
+
+    assert snapshot.status == :stopped
+
+    history = Synaptic.history(run_id)
+
+    # Ensure :stopped event is present
+    assert Enum.any?(history, &(&1[:event] == :stopped and &1[:reason] == :user_rejected))
+
+    # Ensure no retrying events occurred despite retry: 3
+    refute Enum.any?(history, &(&1[:event] == :retrying))
   end
 
   test "start at specific step by name" do
