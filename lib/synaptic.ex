@@ -38,9 +38,14 @@ defmodule Synaptic do
 
   @doc """
   Returns a snapshot of the current workflow state for a run id.
+
+  ## Options
+
+    * `:timeout` - Timeout in milliseconds for the snapshot call (default: 5000).
+      Use `:infinity` to wait indefinitely.
   """
-  def inspect(run_id) when is_binary(run_id) do
-    Engine.inspect(run_id)
+  def inspect(run_id, timeout \\ 5000) when is_binary(run_id) do
+    Engine.inspect(run_id, timeout)
   end
 
   @doc """

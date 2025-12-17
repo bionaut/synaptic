@@ -49,8 +49,8 @@ defmodule Synaptic.Runner do
     GenServer.call(Registry.via(run_id), {:resume, payload})
   end
 
-  def snapshot(run_id) do
-    GenServer.call(Registry.via(run_id), :snapshot)
+  def snapshot(run_id, timeout \\ 5000) do
+    GenServer.call(Registry.via(run_id), :snapshot, timeout)
   end
 
   def history(run_id) do

@@ -163,10 +163,10 @@ defmodule Synaptic.TestRunner do
     elapsed = System.monotonic_time(:millisecond) - start_time
 
     if elapsed >= timeout do
-      snapshot = Synaptic.inspect(run_id)
+      snapshot = Synaptic.inspect(run_id, :infinity)
       {:error, {:timeout, snapshot}}
     else
-      case Synaptic.inspect(run_id) do
+      case Synaptic.inspect(run_id, :infinity) do
         %{status: :completed} = snapshot ->
           {:ok, snapshot}
 

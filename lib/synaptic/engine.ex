@@ -67,8 +67,8 @@ defmodule Synaptic.Engine do
     Runner.resume(run_id, payload)
   end
 
-  def inspect(run_id) do
-    Runner.snapshot(run_id)
+  def inspect(run_id, timeout \\ 5000) do
+    Runner.snapshot(run_id, timeout)
   end
 
   def history(run_id) do
