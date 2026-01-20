@@ -20,6 +20,29 @@ defmodule Synaptic.ToolsUsageTest do
     end
   end
 
+  defmodule AdapterWithUsageAndToolLoop do
+    def chat(messages, _opts) do
+      if Enum.any?(messages, fn
+           %{role: "tool"} -> true
+           %{"role" => "tool"} -> true
+           _ -> false
+         end) do
+        {:ok, "done", %{usage: %{total_tokens: 7}}}
+      else
+        {:ok,
+         %{
+           content: nil,
+           tool_calls: [
+             %{
+               "id" => "call_1",
+               "function" => %{"name" => "ping", "arguments" => ~s({})}
+             }
+           ]
+         }, %{usage: %{total_tokens: 5}}}
+      end
+    end
+  end
+
   @messages [%{role: "user", content: "test"}]
 
   setup do
@@ -95,5 +118,24 @@ defmodule Synaptic.ToolsUsageTest do
     assert metadata.completion_tokens == 25
     assert metadata.total_tokens == 40
     assert metadata.usage == %{prompt_tokens: 15, completion_tokens: 25, total_tokens: 40}
+  end
+
+  test "aggregates usage across tool-call loop when return_usage is true" do
+    tool = %Synaptic.Tools.Tool{
+      name: "ping",
+      description: "No-op tool",
+      schema: %{type: "object", properties: %{}},
+      handler: fn _ -> %{ok: true} end
+    }
+
+    result =
+      Synaptic.Tools.chat(@messages,
+        adapter: AdapterWithUsageAndToolLoop,
+        tools: [tool],
+        return_usage: true
+      )
+
+    assert {:ok, "done", %{usage: usage}} = result
+    assert usage.total_tokens == 12
   end
 end

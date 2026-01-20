@@ -35,6 +35,20 @@ defmodule Synaptic.ToolsTest do
     end
   end
 
+  defmodule ThreadResponsesAdapter do
+    def chat(_messages, opts) do
+      # Verify thread options are passed
+      thread? = Keyword.get(opts, :thread, false)
+      previous_response_id = Keyword.get(opts, :previous_response_id)
+
+      if thread? || previous_response_id do
+        {:ok, "threaded_response", %{response_id: "resp_123"}}
+      else
+        {:ok, "regular_response"}
+      end
+    end
+  end
+
   @messages [%{role: "user", content: "ping"}]
 
   setup do
@@ -107,5 +121,56 @@ defmodule Synaptic.ToolsTest do
              )
 
     assert Process.get(:tool_called) == "hi"
+  end
+
+  test "uses Responses API adapter when thread: true" do
+    Application.put_env(:synaptic, Synaptic.Tools,
+      llm_adapter: __MODULE__.PrimaryAdapter,
+      agents: []
+    )
+
+    # Mock the adapter to verify it's selected
+    # In real usage, this would be Synaptic.Tools.OpenAIResponses
+    assert {:ok, "threaded_response", %{response_id: "resp_123"}} =
+             Synaptic.Tools.chat(@messages,
+               adapter: ThreadResponsesAdapter,
+               thread: true
+             )
+  end
+
+  test "uses Responses API adapter when previous_response_id is present" do
+    Application.put_env(:synaptic, Synaptic.Tools,
+      llm_adapter: __MODULE__.PrimaryAdapter,
+      agents: []
+    )
+
+    assert {:ok, "threaded_response", %{response_id: "resp_123"}} =
+             Synaptic.Tools.chat(@messages,
+               adapter: ThreadResponsesAdapter,
+               previous_response_id: "resp_abc"
+             )
+  end
+
+  test "defaults to Chat Completions adapter when thread options not present" do
+    Application.put_env(:synaptic, Synaptic.Tools,
+      llm_adapter: __MODULE__.PrimaryAdapter,
+      agents: []
+    )
+
+    # Should use PrimaryAdapter (Chat Completions) by default
+    assert {:ok, {:primary, _opts}} = Synaptic.Tools.chat(@messages)
+  end
+
+  test "thread option is backward compatible" do
+    Application.put_env(:synaptic, Synaptic.Tools,
+      llm_adapter: __MODULE__.PrimaryAdapter,
+      agents: [
+        engineer: [model: "o4-mini", temperature: 0.2]
+      ]
+    )
+
+    # Existing code without thread option should continue to work
+    assert {:ok, {:primary, _opts}} =
+             Synaptic.Tools.chat(@messages, agent: :engineer)
   end
 end

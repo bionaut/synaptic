@@ -10,6 +10,11 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
 
     @default_topic "Learning Elixir fundamentals"
 
+    # This workflow uses OpenAI's Responses API with thread support to maintain
+    # conversation continuity across steps and human-in-the-loop suspensions.
+    # The response_id is preserved in context and passed as previous_response_id
+    # to continue the thread across workflow steps.
+
     step :collect_topic, input: %{topic: :string}, output: %{topic: :string} do
       topic = Map.get(context, :topic, @default_topic)
       {:ok, %{topic: topic}}
@@ -18,14 +23,15 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
     step :draft_questions, retry: 2 do
       topic = Map.get(context, :topic, @default_topic)
 
-      case build_questions(topic) do
+      case build_questions(topic, context) do
         {:ok, questions, metadata} ->
           {:ok,
            %{
              pending_questions: questions,
              clarification_answers: %{},
              question_source: metadata[:question_source],
-             current_question: nil
+             current_question: nil,
+             response_id: metadata[:response_id] || context[:response_id]
            }}
       end
     end
@@ -40,9 +46,14 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
     step :generate_learning_plan do
       topic = Map.get(context, :topic, @default_topic)
       answers = Map.get(context, :clarification_answers, %{})
+      previous_response_id = Map.get(context, :response_id)
 
-      case build_outline(topic, answers) do
-        {:ok, plan, metadata} -> {:ok, Map.merge(%{outline: plan}, metadata)}
+      case build_outline(topic, answers, previous_response_id) do
+        {:ok, plan, metadata} ->
+          {:ok,
+           Map.merge(%{outline: plan}, %{
+             response_id: metadata[:response_id] || previous_response_id
+           })}
       end
     end
 
@@ -122,7 +133,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
 
     commit()
 
-    defp build_questions(topic) do
+    defp build_questions(topic, context) do
       messages = [
         %{role: "system", content: "You design probing questions for learning plans."},
         %{
@@ -133,18 +144,67 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
         }
       ]
 
-      # Use streaming for question generation
-      case safe_chat(messages, stream: true) do
-        {:ok, raw} ->
+      # Use Responses API with thread support
+      # First call uses thread: true, subsequent calls use previous_response_id
+      # This maintains conversation continuity even across suspend/resume boundaries
+      previous_response_id = Map.get(context, :response_id)
+
+      opts =
+        if previous_response_id do
+          Logger.debug("Continuing thread with previous_response_id: #{previous_response_id}")
+
+          [
+            thread: true,
+            previous_response_id: previous_response_id,
+            stream: true,
+            model: "gpt-4o-mini",
+            receive_timeout: 60_000
+          ]
+        else
+          Logger.debug("Starting new thread")
+          [thread: true, stream: true, model: "gpt-4o-mini", receive_timeout: 60_000]
+        end
+
+      case safe_chat(messages, opts) do
+        {:ok, raw, meta} when is_map(meta) ->
+          response_id = Map.get(meta, :response_id)
+          Logger.debug("Received response with response_id: #{inspect(response_id)}")
           questions = parse_questions(raw)
 
           if questions == [] do
+            Logger.warning("No questions parsed from LLM response, using fallback")
+            # Preserve response_id even when using fallback questions
+            fallback_result = fallback_questions(topic, :empty_response)
+            case fallback_result do
+              {:ok, questions, metadata} ->
+                metadata = if response_id, do: Map.put(metadata, :response_id, response_id), else: metadata
+                {:ok, questions, metadata}
+              other -> other
+            end
+          else
+            metadata = %{question_source: :llm}
+
+            metadata =
+              if response_id, do: Map.put(metadata, :response_id, response_id), else: metadata
+
+            Logger.info("Generated #{length(questions)} questions from LLM")
+            {:ok, questions, metadata}
+          end
+
+        {:ok, raw} ->
+          Logger.debug("Received response without metadata")
+          questions = parse_questions(raw)
+
+          if questions == [] do
+            Logger.warning("No questions parsed from LLM response, using fallback")
             fallback_questions(topic, :empty_response)
           else
+            Logger.info("Generated #{length(questions)} questions from LLM (no response_id)")
             {:ok, questions, %{question_source: :llm}}
           end
 
         {:error, reason} ->
+          Logger.error("LLM call failed: #{inspect(reason)}, using fallback questions")
           fallback_questions(topic, reason)
       end
     end
@@ -176,10 +236,14 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
       end)
     end
 
-    defp build_outline(topic, answers) do
-      case call_llm(topic, answers) do
+    defp build_outline(topic, answers, previous_response_id) do
+      case call_llm(topic, answers, previous_response_id) do
+        {:ok, plan, meta} when is_map(meta) ->
+          response_id = Map.get(meta, :response_id, previous_response_id)
+          {:ok, plan, %{plan_source: :llm, response_id: response_id}}
+
         {:ok, plan} ->
-          {:ok, plan, %{plan_source: :llm}}
+          {:ok, plan, %{plan_source: :llm, response_id: previous_response_id}}
 
         {:error, reason} ->
           Logger.debug("Demo workflow falling back to canned plan: #{inspect(reason)}")
@@ -187,7 +251,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
       end
     end
 
-    defp call_llm(topic, answers) do
+    defp call_llm(topic, answers, previous_response_id) do
       serialized_answers = serialize_answers(answers)
 
       messages = [
@@ -200,9 +264,28 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
         }
       ]
 
-      # Use streaming for learning plan generation (without tools for true streaming)
+      # Use Responses API with thread support to continue conversation
+      # This continues the thread from draft_questions step, maintaining full context
+      opts =
+        if previous_response_id do
+          Logger.debug(
+            "Continuing thread in generate_learning_plan with previous_response_id: #{previous_response_id}"
+          )
+
+          [
+            thread: true,
+            previous_response_id: previous_response_id,
+            stream: true,
+            model: "gpt-4o-mini",
+            receive_timeout: 60_000
+          ]
+        else
+          Logger.debug("Starting new thread in generate_learning_plan")
+          [thread: true, stream: true, model: "gpt-4o-mini", receive_timeout: 60_000]
+        end
+
       try do
-        Synaptic.Tools.chat(messages, stream: true)
+        Synaptic.Tools.chat(messages, opts)
       rescue
         error -> {:error, {:exception, error}}
       end
@@ -239,9 +322,30 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
       try do
         # Note: When tools are provided and stream: true, it automatically falls back to non-streaming
         # This is an OpenAI limitation - streaming doesn't support tool calling
-        Synaptic.Tools.chat(messages, Keyword.merge(opts, tools: [tool]))
+        # Responses API thread support is preserved even when falling back to non-streaming
+        result = Synaptic.Tools.chat(messages, Keyword.merge(opts, tools: [tool]))
+
+        case result do
+          {:ok, _content, _meta} = ok_result ->
+            Logger.debug("safe_chat succeeded with metadata")
+            ok_result
+
+          {:ok, _content} = ok_result ->
+            Logger.debug("safe_chat succeeded without metadata")
+            ok_result
+
+          {:error, reason} = error_result ->
+            Logger.error("safe_chat failed: #{inspect(reason)}")
+            error_result
+        end
       rescue
-        error -> {:error, {:exception, error}}
+        error ->
+          Logger.error("safe_chat exception: #{inspect(error)}")
+          {:error, {:exception, error}}
+      catch
+        :exit, reason ->
+          Logger.error("safe_chat exit: #{inspect(reason)}")
+          {:error, {:exit, reason}}
       end
     end
 

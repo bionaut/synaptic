@@ -10,6 +10,10 @@ If you want the full module-by-module breakdown, see [`TECHNICAL.md`](TECHNICAL.
 - ✅ In-memory runtime with supervised `Synaptic.Runner` processes
 - ✅ Suspension + resume API for human involvement
 - ✅ LLM abstraction with an OpenAI adapter (extensible later)
+- ✅ Recursive Language Models (RLM) for processing large contexts
+- ✅ Tool calling with usage tracking across tool-call loops
+- ✅ Streaming responses with real-time PubSub events
+- ✅ Thread support via OpenAI Responses API
 - ✅ Test suite covering DSL compilation + runtime execution
 - 🔜 Persisted state, UI, distributed execution (future phases)
 
@@ -203,6 +207,200 @@ end
 - Streaming doesn't support `response_format` options (JSON mode)
 - The step function still receives the complete accumulated content when
   streaming finishes
+
+### Recursive Language Models (RLM)
+
+Synaptic includes support for **Recursive Language Models (RLM)**, a pattern for
+processing large contexts that exceed model context windows. RLM uses a root agent
+to orchestrate the process and delegates focused analysis to sub-agents, all while
+tracking token budgets and managing state.
+
+#### Basic Usage
+
+Use `Synaptic.RLM.process/3` to process a large document with a query:
+
+```elixir
+step :analyze_document do
+  document = File.read!("large_document.txt")
+  query = "Summarize the key findings and recommendations"
+
+  case Synaptic.RLM.process(document, query, token_budget: 50_000) do
+    {:ok, answer, stats} ->
+      IO.inspect(stats.budget, label: "Token usage")
+      {:ok, %{summary: answer}}
+
+    {:error, reason, stats} ->
+      {:error, %{reason: reason, stats: stats}}
+  end
+end
+```
+
+#### Built-in Tools
+
+RLM provides a set of built-in tools that the root agent can use:
+
+- **`slice_context`** - Extract a specific character range from the context
+- **`search_context`** - Search the context with regex patterns
+- **`llm_query`** - Query the sub-agent with content and a question
+- **`llm_batch`** - Process multiple content chunks in parallel via sub-agent
+- **`set_variable` / `get_variable`** - Store and retrieve intermediate state
+- **`set_answer`** - Mark the final answer and signal completion
+- **`context_info`** - Get metadata about the context (length, line count, previews)
+
+The root agent orchestrates the process by:
+1. Searching/slicing the context to find relevant sections
+2. Delegating analysis to sub-agents via `llm_query` or `llm_batch`
+3. Synthesizing results and storing intermediate state
+4. Setting the final answer when ready
+
+#### Configuration Options
+
+```elixir
+Synaptic.RLM.process(context, query,
+  # Agent configuration
+  root_agent: :root,              # Root orchestration agent (default: :root)
+  sub_agent: :sub,                # Sub-agent for analysis (default: :sub)
+
+  # Budget limits
+  token_budget: 100_000,          # Total token budget (default: 100_000)
+  cost_budget: 5.0,               # Optional cost ceiling
+  max_iterations: 20,             # Max root iterations (default: 20)
+
+  # Behavior
+  system_prompt: "...",           # Override default system prompt
+  accept_content_as_answer: true,  # Treat plain replies as answers (default: true)
+  min_subcalls_per_root: 4,       # Minimum sub-calls per root call (default: 0)
+  max_enforcement_attempts: 2,    # Max re-prompt attempts for missing subcalls
+  progress_logger: &log/2,        # Optional per-iteration callback
+  receive_timeout: 120_000,       # Adapter receive timeout in ms
+
+  # Custom tools
+  tools: [custom_tool],          # Additional tools beyond built-ins
+  tools_builder: fn env -> [...] end  # Dynamic tool builder function
+)
+```
+
+#### Budget Tracking
+
+RLM tracks token usage and costs across all root and sub-agent calls:
+
+```elixir
+{:ok, answer, stats} = Synaptic.RLM.process(context, query)
+
+stats.budget
+# => %{
+#   tokens_used: 12_345,
+#   token_budget: 100_000,
+#   iterations: 5,
+#   max_iterations: 20,
+#   root_calls: 5,
+#   sub_calls: 12,
+#   cost_used: 0.15,
+#   cost_budget: nil
+# }
+```
+
+The budget is checked after each iteration. If limits are exceeded, RLM returns
+`{:error, :budget_exceeded, stats}`.
+
+#### Sub-call Enforcement
+
+You can enforce that the root agent delegates work to sub-agents:
+
+```elixir
+Synaptic.RLM.process(context, query,
+  min_subcalls_per_root: 4,       # Require at least 4 sub-calls per root call
+  max_enforcement_attempts: 2,     # Re-prompt up to 2 times if missing
+  enforcement_message: "You must analyze at least 4 chunks before drafting."
+)
+```
+
+If the root agent doesn't make enough sub-calls, RLM will inject a system message
+and re-prompt. After `max_enforcement_attempts`, it returns
+`{:error, :subcalls_required, stats}`.
+
+#### Dev Demo Workflow
+
+A dev-only demo workflow showcases RLM functionality:
+
+```elixir
+# In IEx with MIX_ENV=dev
+{:ok, run_id} = Synaptic.start(Synaptic.Dev.RLMDemoWorkflow, %{
+  query: "Design a 4-module learning course from this corpus"
+})
+
+# Or provide your own document
+{:ok, run_id} = Synaptic.start(Synaptic.Dev.RLMDemoWorkflow, %{
+  document: File.read!("my_document.txt"),
+  query: "What are the main themes?",
+  rlm_opts: %{
+    token_budget: 20_000,
+    max_iterations: 10
+  }
+})
+```
+
+The demo workflow:
+- Loads a sample long-form document (or accepts `:document` in input)
+- Runs the RLM loop with root/sub agents
+- Returns the answer plus budget/stats
+- Writes output to `priv/demo/rlm_demo_output.md`
+
+#### Usage Tracking Across Tool Calls
+
+When using tools with `return_usage: true`, Synaptic automatically aggregates
+token usage across the entire tool-call loop (initial request + tool responses):
+
+```elixir
+tool = %Synaptic.Tools.Tool{
+  name: "analyze",
+  handler: fn _ -> "result" end
+}
+
+{:ok, response, %{usage: usage}} = Synaptic.Tools.chat(messages,
+  tools: [tool],
+  return_usage: true
+)
+
+# usage.total_tokens includes tokens from:
+# - Initial request
+# - Tool call response
+# - Final assistant response after tool execution
+```
+
+#### Thread Support
+
+Synaptic supports OpenAI's Responses API for threaded conversations. When `thread: true`
+or `previous_response_id:` is provided, the system automatically uses the Responses API
+adapter:
+
+```elixir
+# Use threaded conversation
+{:ok, response, %{response_id: id}} = Synaptic.Tools.chat(messages,
+  thread: true
+)
+
+# Continue thread
+{:ok, next_response, %{response_id: next_id}} = Synaptic.Tools.chat(messages,
+  previous_response_id: id
+)
+```
+
+This is backward compatible - existing code without thread options continues to use
+the Chat Completions API.
+
+#### Request Timeouts
+
+The OpenAI adapter supports configurable request timeouts:
+
+```elixir
+# Per-call timeout
+Synaptic.Tools.chat(messages, receive_timeout: 180_000)  # 3 minutes
+
+# Or in config
+config :synaptic, Synaptic.Tools.OpenAI,
+  receive_timeout: 120_000  # 2 minutes (default)
+```
 
 ### Writing workflows
 
@@ -485,11 +683,15 @@ This works for regular `step/3`, `async_step/3`, and `parallel_step/3`:
 - **Retries are not applied** for `{:stop, reason}` – it is treated as an
   intentional, terminal outcome rather than an error.
 
-### Dev-only demo workflow
+### Dev-only demo workflows
 
-When running with `MIX_ENV=dev`, the module `Synaptic.Dev.DemoWorkflow` is loaded
-so you can exercise the engine end-to-end without writing your own flow yet. In
-one terminal start an IEx shell:
+When running with `MIX_ENV=dev`, two demo workflows are available to exercise the
+engine end-to-end without writing your own flow yet.
+
+#### Basic Demo Workflow
+
+`Synaptic.Dev.DemoWorkflow` demonstrates suspend/resume patterns and human-in-the-loop
+workflows. In one terminal start an IEx shell:
 
 ```bash
 MIX_ENV=dev iex -S mix
@@ -532,6 +734,12 @@ The demo first asks the LLM to suggest 2–3 clarifying questions, then loops
 through them (suspending after each) before generating the outline. If no OpenAI
 credentials are configured it automatically falls back to canned questions +
 plan so you can still practice the suspend/resume loop.
+
+#### RLM Demo Workflow
+
+`Synaptic.Dev.RLMDemoWorkflow` demonstrates Recursive Language Models for processing
+large contexts. See the [RLM section](#recursive-language-models-rlm) above for details
+and usage examples.
 
 ### Telemetry
 

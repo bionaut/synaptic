@@ -4,7 +4,7 @@ defmodule Synaptic.MixProject do
   def project do
     [
       app: :synaptic,
-      version: "0.2.6",
+      version: "0.3.0-alpha1",
       elixir: "~> 1.14",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,

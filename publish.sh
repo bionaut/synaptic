@@ -21,11 +21,11 @@ if [[ ! -f mix.exs ]]; then
   exit 1
 fi
 
-# Common pattern: version: "0.2.4"
-sed -i '' -E "s/(version: \")([0-9]+\.[0-9]+\.[0-9]+)(\"[,}])/\\1${VERSION}\\3/" mix.exs
+# Update version in mix.exs - handles any version format (e.g., "0.2.4", "0.3.0-rc1", etc.)
+sed -i '' -E "s/(version: \")([^\"]+)(\"[,}])/\\1${VERSION}\\3/" mix.exs
 
-# If you use @version "0.2.4" instead, uncomment this:
-# sed -i '' -E "s/(@version \")([0-9]+\.[0-9]+\.[0-9]+)(\")/\\1${VERSION}\\3/" mix.exs
+# If you use @version "..." instead, uncomment this:
+# sed -i '' -E "s/(@version \")([^\"]+)(\")/\\1${VERSION}\\3/" mix.exs
 
 git add mix.exs
 git commit --amend --no-edit

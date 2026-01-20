@@ -45,7 +45,7 @@ defmodule Synaptic.Tools.OpenAI do
     request =
       Finch.build(:post, endpoint(opts), headers, Jason.encode!(body))
 
-    case Finch.request(request, finch(opts)) do
+    case Finch.request(request, finch(opts), receive_timeout: request_timeout(opts)) do
       {:ok, %Finch.Response{status: 200, body: response_body}} ->
         parse_response(response_body, response_format: response_format)
 
@@ -79,39 +79,50 @@ defmodule Synaptic.Tools.OpenAI do
     acc = %{buffer: "", accumulated: "", status: nil}
 
     result =
-      Finch.stream(request, finch(opts), acc, fn
-        {:status, status}, acc ->
-          if status != 200 do
-            {:error, {:upstream_error, status, nil}, acc}
-          else
-            {:cont, %{acc | status: status}}
-          end
+      Finch.stream(
+        request,
+        finch(opts),
+        acc,
+        fn
+          {:status, status}, acc ->
+            if status != 200 do
+              {:error, {:upstream_error, status, nil}, acc}
+            else
+              {:cont, %{acc | status: status}}
+            end
 
-        {:headers, _headers}, acc ->
-          {:cont, acc}
+          {:headers, _headers}, acc ->
+            {:cont, acc}
 
-        {:data, data}, acc ->
-          new_buffer = acc.buffer <> IO.iodata_to_binary(data)
+          {:data, data}, acc ->
+            new_buffer = acc.buffer <> IO.iodata_to_binary(data)
 
-          {remaining_buffer, events, new_accumulated} =
-            parse_sse_events(new_buffer, acc.accumulated)
+            {remaining_buffer, events, new_accumulated} =
+              parse_sse_events(new_buffer, acc.accumulated)
 
-          # Call on_chunk callback for each event
-          if on_chunk do
-            Enum.each(events, fn {chunk, accumulated} ->
-              on_chunk.(chunk, accumulated)
-            end)
-          end
+            # Call on_chunk callback for each event
+            if on_chunk do
+              Enum.each(events, fn {chunk, accumulated} ->
+                on_chunk.(chunk, accumulated)
+              end)
+            end
 
-          new_acc = %{buffer: remaining_buffer, accumulated: new_accumulated, status: acc.status}
-          {:cont, new_acc}
+            new_acc = %{
+              buffer: remaining_buffer,
+              accumulated: new_accumulated,
+              status: acc.status
+            }
 
-        :done, acc ->
-          {:ok, acc.accumulated}
+            {:cont, new_acc}
 
-        {:error, reason}, _acc ->
-          {:error, reason}
-      end)
+          :done, acc ->
+            {:ok, acc.accumulated}
+
+          {:error, reason}, _acc ->
+            {:error, reason}
+        end,
+        receive_timeout: request_timeout(opts)
+      )
 
     # For streaming, usage info is not available in chunks
     # OpenAI streaming responses don't include usage in chunks, so we return without it
@@ -193,6 +204,10 @@ defmodule Synaptic.Tools.OpenAI do
     do: Map.put(body, :response_format, response_format)
 
   defp endpoint(opts), do: opts[:endpoint] || config(opts)[:endpoint] || @endpoint
+
+  defp request_timeout(opts) do
+    opts[:receive_timeout] || config(opts)[:receive_timeout] || 120_000
+  end
 
   defp api_key(opts) do
     opts[:api_key] ||
