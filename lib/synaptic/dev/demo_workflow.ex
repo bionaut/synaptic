@@ -263,4 +263,125 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
       |> String.trim()
     end
   end
+
+  defmodule Synaptic.Dev.ContactInfoWorkflow do
+    @moduledoc """
+    Demo workflow that collects email/phone details with LLM-based routing.
+    """
+
+    use Synaptic.Workflow
+
+    step :ask_contact,
+      suspend: true,
+      resume_schema: %{input: :string} do
+      case get_in(context, [:human_input, :input]) do
+        nil ->
+          suspend_for_human("Share your email and/or phone number.")
+
+        input ->
+          {:ok, %{raw_input: String.trim(input)}}
+      end
+    end
+
+    step :parse_contact do
+      input = Map.get(context, :raw_input, "")
+
+      {:ok,
+       %{
+         extracted_email: extract_email(input),
+         extracted_phone: extract_phone(input)
+       }}
+    end
+
+    llm_router :decide_next,
+      [
+        {"an email and phone number are both available", :finish},
+        {"the email is missing but a phone number is available", :ask_email},
+        {"the phone number is missing but an email is available", :ask_phone},
+        {"both email and phone are missing or unclear", :ask_both}
+      ],
+      prompt: "Choose the best next step based on the extracted contact details." do
+      %{
+        extracted_email: Map.get(context, :extracted_email),
+        extracted_phone: Map.get(context, :extracted_phone),
+        raw_input: Map.get(context, :raw_input)
+      }
+    end
+
+    step :ask_email,
+      suspend: true,
+      resume_schema: %{email: :string} do
+      case get_in(context, [:human_input, :email]) do
+        nil ->
+          suspend_for_human("What's your email address?")
+
+        email ->
+          {:route, :decide_next, %{extracted_email: String.trim(email)}}
+      end
+    end
+
+    step :ask_phone,
+      suspend: true,
+      resume_schema: %{phone: :string} do
+      case get_in(context, [:human_input, :phone]) do
+        nil ->
+          suspend_for_human("What's your phone number?")
+
+        phone ->
+          {:route, :decide_next, %{extracted_phone: extract_phone(phone)}}
+      end
+    end
+
+    step :ask_both,
+      suspend: true,
+      resume_schema: %{email: :string, phone: :string} do
+      case get_in(context, [:human_input, :email]) do
+        nil ->
+          suspend_for_human("Please share your email and phone number.")
+
+        email ->
+          phone = get_in(context, [:human_input, :phone])
+
+          {:route, :decide_next,
+           %{
+             extracted_email: String.trim(email),
+             extracted_phone: extract_phone(phone || "")
+           }}
+      end
+    end
+
+    step :finish do
+      {:ok,
+       %{
+         email: Map.get(context, :extracted_email),
+         phone: Map.get(context, :extracted_phone),
+         status: :complete
+       }}
+    end
+
+    commit()
+
+    defp extract_email(input) when is_binary(input) do
+      case Regex.run(~r/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i, input) do
+        [email | _] -> email
+        _ -> nil
+      end
+    end
+
+    defp extract_email(_), do: nil
+
+    defp extract_phone(input) when is_binary(input) do
+      digits = input |> String.replace(~r/\D/, "")
+
+      cond do
+        byte_size(digits) >= 10 ->
+          digits |> String.slice(-10, 10)
+
+        true ->
+          nil
+      end
+    end
+
+    defp extract_phone(_), do: nil
+  end
 end

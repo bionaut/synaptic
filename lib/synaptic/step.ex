@@ -11,7 +11,8 @@ defmodule Synaptic.Step do
     resume_schema: %{},
     max_retries: 0,
     type: :sequential,
-    scorers: []
+    scorers: [],
+    llm_branches: []
   ]
 
   @type t :: %__MODULE__{
@@ -21,8 +22,9 @@ defmodule Synaptic.Step do
           suspend?: boolean(),
           resume_schema: map(),
           max_retries: non_neg_integer(),
-          type: :sequential | :parallel | :async,
-          scorers: list()
+          type: :sequential | :parallel | :async | :llm,
+          scorers: list(),
+          llm_branches: list()
         }
 
   @doc false
@@ -35,7 +37,8 @@ defmodule Synaptic.Step do
       resume_schema: Keyword.get(opts, :resume_schema, %{}),
       max_retries: Keyword.get(opts, :retry, 0),
       type: Keyword.get(opts, :type, :sequential),
-      scorers: Keyword.get(opts, :scorers, [])
+      scorers: Keyword.get(opts, :scorers, []),
+      llm_branches: Keyword.get(opts, :llm_branches, [])
     }
   end
 

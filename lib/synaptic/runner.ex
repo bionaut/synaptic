@@ -236,6 +236,9 @@ defmodule Synaptic.Runner do
         new_state = handle_step_success(state, step, data)
         {:continue, new_state}
 
+      {:route, target_step, data} when is_atom(target_step) and is_map(data) ->
+        handle_step_route(state, step, target_step, data)
+
       {:suspend, info} when is_map(info) ->
         message = Map.get(info, :message)
         metadata = Map.get(info, :metadata, %{})
@@ -317,8 +320,37 @@ defmodule Synaptic.Runner do
     new_state
   end
 
+  defp handle_step_route(state, step, target_step, data) do
+    pre_context = state.context
+
+    case find_step_index(state.steps, target_step) do
+      nil ->
+        handle_step_error(step, {:invalid_route_target, target_step}, state)
+
+      target_index ->
+        new_state =
+          state
+          |> Map.update!(:context, fn ctx ->
+            ctx
+            |> Map.merge(data)
+            |> Map.delete(:human_input)
+          end)
+          |> Map.put(:current_step_index, target_index)
+          |> push_history(%{step: step.name, status: :routed, target: target_step})
+          |> publish_event(%{event: :step_routed, step: step.name, target: target_step})
+
+        run_scorers_async(step, state.workflow, state.run_id, pre_context, new_state.context, data)
+
+        {:continue, new_state}
+    end
+  end
+
   defp increment_step(state) do
     Map.update!(state, :current_step_index, &(&1 + 1))
+  end
+
+  defp find_step_index(steps, step_name) do
+    Enum.find_index(steps, fn step -> step.name == step_name end)
   end
 
   defp push_history(state, entry) do
@@ -672,7 +704,7 @@ defmodule Synaptic.Runner do
     #   - :run_id    - workflow run id (when available in context)
     #   - :workflow  - workflow module
     #   - :step_name - step name (atom)
-    #   - :type      - step type (:default | :parallel | :async)
+    #   - :type      - step type (:default | :parallel | :async | :llm)
     #
     # Stop metadata adds:
     #   - :status    - :ok | :suspend | :error | :unknown
@@ -697,6 +729,7 @@ defmodule Synaptic.Runner do
         status =
           case result do
             {:ok, _} -> :ok
+            {:route, _, _} -> :routed
             {:suspend, _} -> :suspend
             {:error, _} -> :error
             _ -> :unknown

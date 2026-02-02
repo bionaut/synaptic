@@ -229,6 +229,80 @@ end
 Synaptic.resume(run_id, %{approved: true})
 ```
 
+#### LLM routing with `llm_router/3`
+
+`llm_router/3` is a routing step that asks an LLM to choose the next step based on
+your current context and a list of human-readable branch conditions. The block
+returns **only the prompt input** (map or string) that gets sent to the LLM.
+
+Key points:
+
+- The block is just Elixir code — you can fetch data, compute, and shape the
+  prompt input however you want.
+- The block must return a **map or string**. That value is serialized and
+  included in the LLM prompt to decide the route.
+- `llm_router/3` is **route-only**. It must route to one of the listed targets
+  (it does not advance linearly).
+
+**Minimal example:**
+
+```elixir
+llm_router :decide_next,
+  [
+    {"the user provided a topic", :draft_questions},
+    {"the user needs help choosing a topic", :suggest_topics},
+    {"unclear or none of the above", :ask_clarification}
+  ] do
+  %{
+    topic: Map.get(context, :topic),
+    user_input: get_in(context, [:human_input, :answer])
+  }
+end
+```
+
+**With custom prompts and model options:**
+
+```elixir
+llm_router :decide_next,
+  [
+    {"an email and phone number are both available", :finish},
+    {"the email is missing but a phone number is available", :ask_email},
+    {"the phone number is missing but an email is available", :ask_phone},
+    {"both email and phone are missing or unclear", :ask_both}
+  ],
+  prompt: "Choose the single best next step based on the state.",
+  system_prompt: "You are a router. Reply with JSON.",
+  model: "gpt-4o-mini",
+  temperature: 0
+do
+  %{
+    extracted_email: Map.get(context, :extracted_email),
+    extracted_phone: Map.get(context, :extracted_phone),
+    raw_input: Map.get(context, :raw_input)
+  }
+end
+```
+
+**How the routing works:**
+
+- The LLM receives your prompt input plus the branch list.
+- It chooses one branch and returns the target step.
+- Synaptic jumps directly to that step (no auto-increment).
+
+**Common pattern: re-route until validated**
+
+Use follow-up steps that route back to the `llm_router` until all required data is
+present:
+
+```elixir
+step :ask_email, suspend: true, resume_schema: %{email: :string} do
+  case get_in(context, [:human_input, :email]) do
+    nil -> suspend_for_human("What's your email address?")
+    email -> {:route, :decide_next, %{extracted_email: String.trim(email)}}
+  end
+end
+```
+
 ### Starting at a specific step
 
 For complex workflows, you can start execution at a specific step with pre-populated context. This is useful when you want to skip earlier steps or resume from a checkpoint:

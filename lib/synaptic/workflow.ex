@@ -5,6 +5,8 @@ defmodule Synaptic.Workflow do
 
   alias Synaptic.Step
 
+  @llm_router_opts [:prompt, :system_prompt, :model, :temperature, :response_format]
+
   defmacro __using__(_opts) do
     quote do
       import Synaptic.Workflow
@@ -67,6 +69,47 @@ defmodule Synaptic.Workflow do
       def __synaptic_handle__(unquote(name), var!(context)) do
         _ = var!(context)
         unquote(block)
+      end
+    end
+  end
+
+  @doc """
+  Declares an LLM-driven routing step. The block receives the accumulated
+  `context` and returns a map or string that becomes the prompt input used
+  to choose the next step from the provided branches.
+  """
+  defmacro llm_router(name, branches, opts \\ [], do: block) do
+    quote do
+      @synaptic_steps Synaptic.Workflow.__llm_router_definition__(
+                        unquote(name),
+                        unquote(branches),
+                        unquote(opts)
+                      )
+
+      def __synaptic_handle__(unquote(name), var!(context)) do
+        _ = var!(context)
+
+        prompt_input = unquote(block)
+        llm_opts = Synaptic.Workflow.__llm_router_llm_opts__(unquote(opts))
+
+        case Synaptic.LLMRouter.evaluate(
+               var!(context),
+               unquote(branches),
+               prompt_input,
+               llm_opts
+             ) do
+          {:ok, target_step} ->
+            {:route, target_step, %{}}
+
+          {:ok, target_step, data} when is_map(data) ->
+            {:route, target_step, data}
+
+          {:error, reason} ->
+            {:error, reason}
+
+          other ->
+            {:error, {:invalid_llm_router_return, other}}
+        end
       end
     end
   end
@@ -167,6 +210,7 @@ defmodule Synaptic.Workflow do
   defmacro __before_compile__(env) do
     steps = env.module |> Module.get_attribute(:synaptic_steps) |> Enum.reverse()
     commit? = Module.get_attribute(env.module, :synaptic_commit)
+    Synaptic.Workflow.__validate_llm_steps__(steps, env.module)
 
     quote do
       unquote(unless(commit?, do: compile_commit_warning(env.module)))
@@ -184,8 +228,58 @@ defmodule Synaptic.Workflow do
     Step.new(name, opts)
   end
 
+  def __llm_router_definition__(name, branches, opts) do
+    {_llm_opts, step_opts} = __split_llm_router_opts__(opts)
+
+    step_opts
+    |> Keyword.put(:type, :llm)
+    |> Keyword.put(:llm_branches, branches)
+    |> then(&Step.new(name, &1))
+  end
+
+  def __llm_router_llm_opts__(opts) do
+    {llm_opts, _step_opts} = __split_llm_router_opts__(opts)
+    llm_opts
+  end
+
   def __build_definition__(module, steps) do
     %{module: module, steps: steps}
+  end
+
+  def __split_llm_router_opts__(opts) do
+    Keyword.split(opts, @llm_router_opts)
+  end
+
+  def __validate_llm_steps__(steps, module) do
+    step_names = MapSet.new(Enum.map(steps, & &1.name))
+
+    Enum.each(steps, fn step ->
+      case Map.get(step, :type) do
+        :llm -> validate_llm_step(step, step_names, module)
+        _ -> :ok
+      end
+    end)
+  end
+
+  defp validate_llm_step(step, step_names, module) do
+    branches = Map.get(step, :llm_branches, [])
+
+    unless is_list(branches) do
+      raise ArgumentError,
+            "llm_router #{inspect(step.name)} in #{inspect(module)} must define a list of branches"
+    end
+
+    Enum.each(branches, fn
+      {condition, target} when is_binary(condition) and is_atom(target) ->
+        if not MapSet.member?(step_names, target) do
+          raise ArgumentError,
+                "llm_router #{inspect(step.name)} in #{inspect(module)} references unknown step #{inspect(target)}"
+        end
+
+      other ->
+        raise ArgumentError,
+              "llm_router #{inspect(step.name)} in #{inspect(module)} has invalid branch #{inspect(other)}"
+    end)
   end
 
   defp compile_commit_warning(module) do
