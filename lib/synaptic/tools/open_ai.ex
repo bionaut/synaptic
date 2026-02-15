@@ -76,13 +76,13 @@ defmodule Synaptic.Tools.OpenAI do
     request = Finch.build(:post, endpoint(opts), headers, Jason.encode!(body))
     on_chunk = Keyword.get(opts, :on_chunk)
 
-    acc = %{buffer: "", accumulated: "", status: nil}
+    acc = %{buffer: "", accumulated: "", status: nil, error: nil}
 
     result =
-      Finch.stream(request, finch(opts), acc, fn
+      Finch.stream_while(request, finch(opts), acc, fn
         {:status, status}, acc ->
           if status != 200 do
-            {:error, {:upstream_error, status, nil}, acc}
+            {:halt, %{acc | status: status, error: {:upstream_error, status, nil}}}
           else
             {:cont, %{acc | status: status}}
           end
@@ -96,29 +96,30 @@ defmodule Synaptic.Tools.OpenAI do
           {remaining_buffer, events, new_accumulated} =
             parse_sse_events(new_buffer, acc.accumulated)
 
-          # Call on_chunk callback for each event
           if on_chunk do
             Enum.each(events, fn {chunk, accumulated} ->
               on_chunk.(chunk, accumulated)
             end)
           end
 
-          new_acc = %{buffer: remaining_buffer, accumulated: new_accumulated, status: acc.status}
-          {:cont, new_acc}
+          {:cont, %{acc | buffer: remaining_buffer, accumulated: new_accumulated}}
 
-        :done, acc ->
-          {:ok, acc.accumulated}
-
-        {:error, reason}, _acc ->
-          {:error, reason}
+        {:trailers, _trailers}, acc ->
+          {:cont, acc}
       end)
 
     # For streaming, usage info is not available in chunks
     # OpenAI streaming responses don't include usage in chunks, so we return without it
     # If usage is needed for streaming, it would need to be tracked separately
     case result do
-      {:ok, accumulated} -> {:ok, accumulated}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{error: nil, accumulated: accumulated}} ->
+        {:ok, accumulated}
+
+      {:ok, %{error: reason}} ->
+        {:error, reason}
+
+      {:error, reason, _acc} ->
+        {:error, reason}
     end
   end
 

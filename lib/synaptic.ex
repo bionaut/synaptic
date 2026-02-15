@@ -103,6 +103,20 @@ defmodule Synaptic do
     PubSub.unsubscribe(Synaptic.PubSub, topic(run_id))
   end
 
+  @doc """
+  Starts a voice session and a workflow run in one call.
+  """
+  def start_voice_session(workflow_module, input \\ %{}, opts \\ []) when is_map(input) do
+    Synaptic.Voice.start_session(workflow_module, input, opts)
+  end
+
+  @doc """
+  Attaches a voice session to an already running workflow run.
+  """
+  def attach_voice_session(run_id, opts \\ []) when is_binary(run_id) do
+    Synaptic.Voice.attach_run(run_id, opts)
+  end
+
   defp topic(run_id), do: "synaptic:run:" <> run_id
 
   defp safe_get_state(pid) do

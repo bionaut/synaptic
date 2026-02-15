@@ -14,6 +14,10 @@ defmodule Synaptic.Application do
     children = [
       Synaptic.Registry,
       Synaptic.RuntimeSupervisor,
+      Synaptic.Voice.Registry,
+      Synaptic.Voice.SessionSupervisor,
+      Synaptic.Voice.Realtime.Registry,
+      Synaptic.Voice.Realtime.SessionSupervisor,
       {Phoenix.PubSub, name: Synaptic.PubSub},
       {Finch, name: Synaptic.Finch}
     ]

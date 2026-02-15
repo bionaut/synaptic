@@ -14,7 +14,8 @@ defmodule Synaptic.LLMRouter do
   def evaluate(_context, branches, prompt_input, opts \\ []) do
     with :ok <- validate_branches(branches),
          {:ok, formatted_input} <- format_prompt_input(prompt_input),
-         {system_prompt, user_prompt, llm_opts} <- build_messages(branches, formatted_input, opts),
+         {system_prompt, user_prompt, llm_opts} <-
+           build_messages(branches, formatted_input, opts),
          {:ok, content} <- call_llm(system_prompt, user_prompt, llm_opts),
          {:ok, target} <- parse_response(content, branches) do
       {:ok, target}
@@ -93,7 +94,10 @@ defmodule Synaptic.LLMRouter do
 
   defp parse_response(%{} = map, branches) do
     target = Map.get(map, "target") || Map.get(map, :target)
-    choice = Map.get(map, "choice") || Map.get(map, :choice) || Map.get(map, "option") || Map.get(map, :option)
+
+    choice =
+      Map.get(map, "choice") || Map.get(map, :choice) || Map.get(map, "option") ||
+        Map.get(map, :option)
 
     cond do
       not is_nil(target) -> resolve_target(target, branches)
@@ -127,7 +131,7 @@ defmodule Synaptic.LLMRouter do
   defp resolve_choice(choice, branches) when is_binary(choice) do
     case extract_integer(choice) do
       {:ok, index} -> resolve_choice(index, branches)
-      :error -> {:error, {:invalid_route_choice, choice}}
+      :error -> resolve_target(choice, branches)
     end
   end
 
@@ -152,6 +156,7 @@ defmodule Synaptic.LLMRouter do
       |> branch_targets()
       |> Enum.reduce(%{}, fn branch_target, acc ->
         name = Atom.to_string(branch_target)
+
         acc
         |> Map.put(name, branch_target)
         |> Map.put(String.downcase(name), branch_target)

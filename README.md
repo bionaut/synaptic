@@ -1237,3 +1237,40 @@ mix test
 2. Build basic UI/endpoints for human approvals + observability
 3. Introduce additional adapters (Anthropic, local models, tooling APIs)
 4. Explore distributed execution + versioning (Phase 2 roadmap)
+
+## Headless voice sessions
+
+Synaptic includes an in-package headless voice subsystem under `Synaptic.Voice`
+for integrating audio input/output into existing workflows.
+
+For full API, architecture, config, telemetry, and integration details, see
+[`VOICE.md`](VOICE.md).
+
+### Quickstart
+
+```elixir
+{:ok, run_id} = Synaptic.start(MyWorkflow, %{})
+{:ok, session_id} = Synaptic.Voice.attach_run(run_id)
+
+:ok = Synaptic.Voice.subscribe_session(session_id)
+:ok = Synaptic.Voice.push_text(session_id, "Hello")
+:ok = Synaptic.Voice.end_turn(session_id)
+```
+
+Voice session events are published on `Synaptic.PubSub` topic
+`"synaptic:voice:session:" <> session_id` as:
+
+```elixir
+{:synaptic_voice_event, %{v: 1, session_id: ..., run_id: ..., event: ..., data: ...}}
+```
+
+Important events:
+- `:input_partial_text`
+- `:input_final_text`
+- `:assistant_text_chunk`
+- `:assistant_audio_chunk`
+- `:duplex_interruption`
+- `:session_stopped`
+
+Default mode is full duplex (`voice_mode: :duplex`), with
+`voice_mode: :turn_based` available as a fallback.

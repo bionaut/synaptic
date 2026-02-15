@@ -5,6 +5,10 @@ defmodule Synaptic.LLMRouterTest do
     def chat(_messages, _opts), do: {:ok, %{"choice" => 2}}
   end
 
+  defmodule RouterAdapterChoiceTarget do
+    def chat(_messages, _opts), do: {:ok, %{"choice" => "right"}}
+  end
+
   defmodule LLMRouterWorkflow do
     use Synaptic.Workflow
 
@@ -14,10 +18,10 @@ defmodule Synaptic.LLMRouterTest do
     end
 
     llm_router :decide,
-      [
-        {"go left", :left},
-        {"go right", :right}
-      ] do
+               [
+                 {"go left", :left},
+                 {"go right", :right}
+               ] do
       %{signal: Map.get(context, :signal)}
     end
 
@@ -39,7 +43,9 @@ defmodule Synaptic.LLMRouterTest do
 
     base = original || []
 
-    Application.put_env(:synaptic, Synaptic.Tools,
+    Application.put_env(
+      :synaptic,
+      Synaptic.Tools,
       Keyword.put(base, :llm_adapter, __MODULE__.RouterAdapter)
     )
 
@@ -83,6 +89,32 @@ defmodule Synaptic.LLMRouterTest do
     assert Enum.any?(history, fn entry ->
              entry[:step] == :decide and entry[:status] == :routed and entry[:target] == :right
            end)
+  end
+
+  test "llm_router accepts target name in choice field" do
+    original = Application.get_env(:synaptic, Synaptic.Tools)
+    base = original || []
+
+    Application.put_env(
+      :synaptic,
+      Synaptic.Tools,
+      Keyword.put(base, :llm_adapter, __MODULE__.RouterAdapterChoiceTarget)
+    )
+
+    on_exit(fn ->
+      if original do
+        Application.put_env(:synaptic, Synaptic.Tools, original)
+      else
+        Application.delete_env(:synaptic, Synaptic.Tools)
+      end
+    end)
+
+    parent = self()
+    {:ok, _run_id} = Synaptic.start(LLMRouterWorkflow, %{test_pid: parent, signal: :ok})
+
+    assert_receive {:step, :start}, 500
+    assert_receive {:step, :right}, 500
+    refute_receive {:step, :left}, 100
   end
 
   test "llm_router branch targets must exist in workflow" do

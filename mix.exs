@@ -4,7 +4,7 @@ defmodule Synaptic.MixProject do
   def project do
     [
       app: :synaptic,
-      version: "0.2.7",
+      version: "0.3.0-alpha.2",
       elixir: "~> 1.14",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -13,7 +13,7 @@ defmodule Synaptic.MixProject do
       package: package(),
       docs: [
         main: "readme",
-        extras: ["README.md", "TECHNICAL.md"],
+        extras: ["README.md", "TECHNICAL.md", "VOICE.md"],
         authors: ["Synaptic contributors"]
       ],
       deps: deps()

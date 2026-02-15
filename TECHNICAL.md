@@ -185,3 +185,21 @@ experimentation.
   integrations without modifying Synaptic core.
 - LLM call metadata includes usage metrics (token counts) when available from
   adapters, allowing eval services to track costs and usage alongside quality scores.
+
+## Voice subsystem
+
+Synaptic ships a headless voice session runtime under `Synaptic.Voice`.
+
+For implementation and integration details, see [`VOICE.md`](VOICE.md).
+
+- `Synaptic.Voice.Session` is a GenServer keyed by session id and supervised by
+  `Synaptic.Voice.SessionSupervisor`.
+- Voice sessions subscribe to workflow run events (`synaptic:run:<run_id>`) and
+  convert streaming LLM events into normalized voice events published on
+  `synaptic:voice:session:<session_id>`.
+- STT/TTS integrations are pluggable via behaviours:
+  - `Synaptic.Voice.STTAdapter`
+  - `Synaptic.Voice.TTSAdapter`
+- OpenAI-oriented adapters are available under `Synaptic.Voice.OpenAI.*`.
+- Event envelopes are versioned via `Synaptic.Voice.Event` and include
+  `%{v: 1, session_id, run_id, seq, ts_ms, event, data}`.
