@@ -987,6 +987,155 @@ Synaptic.unsubscribe(run_id)
 Synaptic.stop(run_id, :user_requested)
 ```
 
+### Agent Directory + Router (V1)
+
+Synaptic now includes an additive control-plane layer for registering agents/services
+and routing calls between them without replacing the existing workflow APIs.
+
+This is useful when you want:
+
+- A voice agent (or any agent) to call another workflow/agent by name
+- A registry/"phone book" of available services
+- Per-user task references so callers can recover after crashes or memory loss
+
+Important notes (V1):
+
+- Existing direct workflow APIs (`Synaptic.start/3`, `resume/2`, etc.) still work
+- The built-in directory store is in-memory (state is lost on app restart)
+- Task references are structured records (Synaptic does not parse natural language)
+
+#### Register a workflow as a service
+
+Register an existing workflow module so other agents can call it through the router:
+
+```elixir
+{:ok, _service} =
+  Synaptic.register_agent_service(
+    "internet.search",
+    %{
+      kind: :workflow,
+      capabilities: ["internet.search"],
+      visibility: :tenant,
+      lifecycle_mode: :spawn_on_demand,
+      provider: {:workflow_module, MyApp.SearchWorkflow}
+    }
+  )
+```
+
+This keeps the workflow module unchanged. Registration is explicit and opt-in.
+
+#### Call a service through the router
+
+Any caller can invoke a registered service by service id (subject to policy and visibility):
+
+```elixir
+caller_ctx = %{
+  tenant_id: "default",
+  user_id: "user_123",
+  caller_agent_id: "voice.command"
+}
+
+{:ok, result} =
+  Synaptic.agent_call(
+    "internet.search",
+    %{query: "best elixir books", purpose: "book_search"},
+    caller_ctx: caller_ctx,
+    aliases: ["last_search"]
+  )
+
+# Router returns a handle + instance + task reference + current workflow snapshot
+result.handle
+result.instance
+result.task_reference
+result.snapshot
+```
+
+For workflow-backed services, the router starts (or reuses) a workflow instance and
+returns when the run reaches a non-`:running` state (for example `:waiting_for_human`
+or `:completed`).
+
+#### Resume or inspect via the returned handle
+
+If the workflow is waiting for human input, call the router again using the handle:
+
+```elixir
+# Inspect
+{:ok, inspect_result} =
+  Synaptic.agent_call(result.handle, %{action: :inspect}, caller_ctx: caller_ctx)
+
+# Resume
+{:ok, resumed} =
+  Synaptic.agent_call(
+    result.handle,
+    %{action: :resume, payload: %{approved: true}},
+    caller_ctx: caller_ctx
+  )
+
+resumed.snapshot.status
+```
+
+Supported workflow-backed actions in V1:
+
+- `:inspect`
+- `:history`
+- `:resume`
+- `:stop`
+
+#### Recover a task after caller memory loss (task reference memory)
+
+Synaptic stores structured task references so a caller can recover active work
+without remembering raw instance ids.
+
+```elixir
+tasks =
+  Synaptic.list_user_agent_tasks("user_123")
+
+IO.inspect(tasks, label: "User task references")
+```
+
+You can also re-find a specific task using a structured query (usually produced by
+your voice/LLM agent after interpreting user language):
+
+```elixir
+{:ok, recovered} =
+  Synaptic.AgentDirectory.resolve_task_reference(%{
+    user_id: "user_123",
+    capability: "internet.search",
+    alias: "last_search",
+    require_active: true
+  })
+
+# Route directly to the recovered task
+{:ok, status_result} =
+  Synaptic.agent_call(%{task_ref_id: recovered.task_ref_id}, %{action: :inspect}, caller_ctx: caller_ctx)
+```
+
+In practice, this means:
+
+- Your caller *should* persist the returned handle when possible
+- If the caller crashes or loses memory, it can query/recover via task references
+- Multiple concurrent workflows per user are supported via `purpose`, `alias_keys`,
+  `status`, and recency-based resolution
+
+#### Async router jobs
+
+For router-level async execution, use `agent_start_job/3`:
+
+```elixir
+{:ok, job_handle} =
+  Synaptic.agent_start_job(
+    "internet.search",
+    %{query: "OTP supervision tree examples"},
+    caller_ctx: caller_ctx
+  )
+
+{:ok, job_status} = Synaptic.agent_job_status(job_handle.job_id)
+IO.inspect(job_status, label: "Router job status")
+```
+
+This is separate from workflow async steps. It runs the router call itself in a
+background task and returns a job handle.
+
 ### Quick streaming test scripts
 
 Two test scripts are provided for easy testing of streaming functionality:

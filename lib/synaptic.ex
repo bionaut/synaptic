@@ -117,6 +117,41 @@ defmodule Synaptic do
     Synaptic.Voice.attach_run(run_id, opts)
   end
 
+  @doc """
+  Registers an agent/service definition in the directory.
+  """
+  def register_agent_service(service_id, spec, opts \\ []) when is_binary(service_id) do
+    Synaptic.Agent.register_service(service_id, spec, opts)
+  end
+
+  @doc """
+  Calls a registered service/instance/task reference through the agent router.
+  """
+  def agent_call(target, payload, opts \\ []) do
+    Synaptic.AgentRouter.call(target, payload, opts)
+  end
+
+  @doc """
+  Starts an asynchronous routed job and returns a job handle.
+  """
+  def agent_start_job(target, payload, opts \\ []) do
+    Synaptic.AgentRouter.start_job(target, payload, opts)
+  end
+
+  @doc """
+  Returns the status of an async agent job.
+  """
+  def agent_job_status(job_id, opts \\ []) when is_binary(job_id) do
+    Synaptic.AgentRouter.job_status(job_id, opts)
+  end
+
+  @doc """
+  Lists task references for a user from the built-in task reference memory.
+  """
+  def list_user_agent_tasks(user_id, filters \\ %{}, opts \\ []) when is_binary(user_id) do
+    Synaptic.AgentDirectory.list_user_tasks(user_id, filters, opts)
+  end
+
   defp topic(run_id), do: "synaptic:run:" <> run_id
 
   defp safe_get_state(pid) do

@@ -14,6 +14,10 @@ defmodule Synaptic.Application do
     children = [
       Synaptic.Registry,
       Synaptic.RuntimeSupervisor,
+      Synaptic.AgentDirectory.Store.InMemory,
+      Synaptic.AgentDirectory,
+      Synaptic.WorkloadManager,
+      Synaptic.AgentRouter,
       Synaptic.Voice.Registry,
       Synaptic.Voice.SessionSupervisor,
       Synaptic.Voice.Realtime.Registry,

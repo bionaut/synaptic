@@ -384,4 +384,308 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
 
     defp extract_phone(_), do: nil
   end
+
+  defmodule Synaptic.Dev.AgentWorkerWorkflow do
+    @moduledoc """
+    Dev-only worker agent workflow used by the two-agent router demo.
+    """
+
+    use Synaptic.Workflow
+    require Logger
+
+    step :prepare, input: %{topic: :string} do
+      topic = Map.get(context, :topic, "unknown topic")
+      Logger.info("[agent_worker] preparing topic=#{inspect(topic)}")
+
+      {:ok,
+       %{
+         topic: topic,
+         draft: "Research notes for #{topic}",
+         worker_status: :prepared
+       }}
+    end
+
+    step :approval_gate,
+      suspend: true,
+      resume_schema: %{approved: :boolean} do
+      case get_in(context, [:human_input, :approved]) do
+        nil ->
+          Logger.info("[agent_worker] waiting for approval topic=#{inspect(context.topic)}")
+
+          suspend_for_human(
+            "Approve worker output for #{context.topic}?",
+            %{draft: context.draft}
+          )
+
+        true ->
+          Logger.info("[agent_worker] approved topic=#{inspect(context.topic)}")
+          {:ok, %{worker_status: :approved}}
+
+        false ->
+          Logger.info("[agent_worker] rejected topic=#{inspect(context.topic)}")
+          {:stop, :worker_rejected}
+      end
+    end
+
+    step :finalize do
+      result = "Finalized result for #{context.topic}"
+      Logger.info("[agent_worker] completed topic=#{inspect(context.topic)}")
+      {:ok, %{worker_status: :completed, worker_result: result}}
+    end
+
+    commit()
+  end
+
+  defmodule Synaptic.Dev.AgentCoordinatorWorkflow do
+    @moduledoc """
+    Dev-only coordinator workflow that calls the worker agent through Synaptic's
+    Agent Router, recovers it through task references, and resumes it.
+    """
+
+    use Synaptic.Workflow
+    require Logger
+
+    @worker_service_id "demo.agent.worker"
+
+    step :prepare_inputs do
+      topic = Map.get(context, :topic, "Elixir supervisors")
+      user_id = Map.get(context, :user_id, "demo-user")
+      alias_key = Map.get(context, :alias_key, "last_demo_worker")
+
+      caller_ctx = %{
+        tenant_id: "default",
+        user_id: user_id,
+        caller_agent_id: "demo.coordinator"
+      }
+
+      Logger.info("[agent_coordinator] prepared caller_ctx user_id=#{user_id} topic=#{inspect(topic)}")
+
+      {:ok,
+       %{
+         topic: topic,
+         user_id: user_id,
+         alias_key: alias_key,
+         coordinator_caller_ctx: caller_ctx
+       }}
+    end
+
+    step :invoke_worker do
+      caller_ctx = context.coordinator_caller_ctx
+
+      Logger.info("[agent_coordinator] calling worker service=#{@worker_service_id}")
+
+      case Synaptic.agent_call(
+             @worker_service_id,
+             %{topic: context.topic, purpose: "demo_two_agent_research"},
+             caller_ctx: caller_ctx,
+             aliases: [context.alias_key],
+             timeout: 5_000
+           ) do
+        {:ok, result} ->
+          Logger.info(
+            "[agent_coordinator] worker started instance=#{result.handle.instance_id} " <>
+              "task_ref=#{result.handle.task_ref_id} run=#{result.handle.run_id} status=#{inspect(result.snapshot.status)}"
+          )
+
+          {:ok,
+           %{
+             worker_handle: result.handle,
+             worker_task_ref_id: result.handle.task_ref_id,
+             worker_instance_id: result.handle.instance_id,
+             worker_run_id: result.handle.run_id,
+             worker_initial_status: result.snapshot.status
+           }}
+
+        {:error, reason} ->
+          Logger.error("[agent_coordinator] failed to call worker: #{inspect(reason)}")
+          {:error, {:worker_call_failed, reason}}
+      end
+    end
+
+    step :recover_worker_via_task_reference do
+      caller_ctx = context.coordinator_caller_ctx
+
+      Logger.info(
+        "[agent_coordinator] recovering worker via task ref query alias=#{context.alias_key} user=#{context.user_id}"
+      )
+
+      with {:ok, task_ref} <-
+             Synaptic.AgentDirectory.resolve_task_reference(%{
+               user_id: context.user_id,
+               capability: "demo.worker",
+               alias: context.alias_key,
+               require_active: true
+             }),
+           {:ok, inspected} <-
+             Synaptic.agent_call(
+               %{task_ref_id: task_ref.task_ref_id},
+               %{action: :inspect},
+               caller_ctx: caller_ctx
+             ) do
+        Logger.info(
+          "[agent_coordinator] recovered task_ref=#{task_ref.task_ref_id} " <>
+            "instance=#{task_ref.instance_id} status=#{inspect(inspected.snapshot.status)}"
+        )
+
+        {:ok,
+         %{
+           recovered_task_ref_id: task_ref.task_ref_id,
+           recovered_instance_id: task_ref.instance_id,
+           recovered_worker_status: inspected.snapshot.status
+         }}
+      else
+        {:error, reason} ->
+          Logger.error("[agent_coordinator] recovery failed: #{inspect(reason)}")
+          {:error, {:worker_recovery_failed, reason}}
+      end
+    end
+
+    step :resume_worker do
+      caller_ctx = context.coordinator_caller_ctx
+
+      Logger.info("[agent_coordinator] resuming worker task_ref=#{context.recovered_task_ref_id}")
+
+      case Synaptic.agent_call(
+             %{task_ref_id: context.recovered_task_ref_id},
+             %{action: :resume, payload: %{approved: true}},
+             caller_ctx: caller_ctx,
+             timeout: 5_000
+           ) do
+        {:ok, resumed} ->
+          final_status = resumed.snapshot.status
+          worker_result = get_in(resumed, [:snapshot, :context, :worker_result])
+
+          Logger.info(
+            "[agent_coordinator] worker resumed status=#{inspect(final_status)} result=#{inspect(worker_result)}"
+          )
+
+          {:ok,
+           %{
+             worker_final_status: final_status,
+             worker_result: worker_result
+           }}
+
+        {:error, reason} ->
+          Logger.error("[agent_coordinator] resume failed: #{inspect(reason)}")
+          {:error, {:worker_resume_failed, reason}}
+      end
+    end
+
+    step :report do
+      summary = %{
+        coordinator: :completed,
+        topic: context.topic,
+        worker: %{
+          service_id: @worker_service_id,
+          instance_id: context.worker_instance_id,
+          task_ref_id: context.worker_task_ref_id,
+          run_id: context.worker_run_id,
+          initial_status: context.worker_initial_status,
+          recovered_status: context.recovered_worker_status,
+          final_status: context.worker_final_status,
+          result: context.worker_result
+        }
+      }
+
+      Logger.info("[agent_coordinator] demo summary=#{inspect(summary)}")
+      {:ok, %{agent_demo_summary: summary}}
+    end
+
+    commit()
+  end
+
+  defmodule Synaptic.Dev.AgentInteropDemo do
+    @moduledoc """
+    One-command helper for validating two-agent communication through the agent
+    directory/router in development.
+    """
+
+    require Logger
+
+    @worker_service_id "demo.agent.worker"
+    @coordinator_service_id "demo.agent.coordinator"
+
+    def register_demo_agent_services do
+      Logger.info("[agent_demo] registering services")
+
+      {:ok, _} =
+        Synaptic.register_agent_service(
+          @worker_service_id,
+          %{
+            kind: :workflow,
+            capabilities: ["demo.worker"],
+            visibility: :tenant,
+            lifecycle_mode: :spawn_on_demand,
+            provider: {:workflow_module, Synaptic.Dev.AgentWorkerWorkflow}
+          }
+        )
+
+      {:ok, _} =
+        Synaptic.register_agent_service(
+          @coordinator_service_id,
+          %{
+            kind: :workflow,
+            capabilities: ["demo.coordinator"],
+            visibility: :tenant,
+            lifecycle_mode: :spawn_on_demand,
+            provider: {:workflow_module, Synaptic.Dev.AgentCoordinatorWorkflow}
+          }
+        )
+
+      :ok
+    end
+
+    @doc """
+    Runs the full two-agent demo with a single command and logs key artifacts.
+
+    Returns the router result map from the coordinator service call.
+    """
+    def run_all(opts \\ []) do
+      topic = Keyword.get(opts, :topic, "How OTP supervisors restart children")
+      user_id = Keyword.get(opts, :user_id, "demo-user")
+      alias_key = Keyword.get(opts, :alias_key, "last_demo_worker")
+
+      caller_ctx = %{
+        tenant_id: "default",
+        user_id: user_id,
+        caller_agent_id: "demo.command"
+      }
+
+      register_demo_agent_services()
+
+      Logger.info("[agent_demo] starting coordinator agent topic=#{inspect(topic)} user_id=#{user_id}")
+
+      result =
+        Synaptic.agent_call(
+          @coordinator_service_id,
+          %{topic: topic, user_id: user_id, alias_key: alias_key},
+          caller_ctx: caller_ctx,
+          aliases: ["last_demo_coordinator"],
+          timeout: 10_000
+        )
+
+      case result do
+        {:ok, response} ->
+          summary = get_in(response, [:snapshot, :context, :agent_demo_summary])
+          coordinator_run_id = response.run_id
+
+          Logger.info("[agent_demo] coordinator run_id=#{inspect(coordinator_run_id)}")
+          Logger.info("[agent_demo] final coordinator snapshot status=#{inspect(response.snapshot.status)}")
+          Logger.info("[agent_demo] summary=#{inspect(summary)}")
+
+          if summary do
+            Logger.info(
+              "[agent_demo] worker artifacts instance=#{summary.worker.instance_id} " <>
+                "task_ref=#{summary.worker.task_ref_id} run=#{summary.worker.run_id} final=#{inspect(summary.worker.final_status)}"
+            )
+          end
+
+          response
+
+        {:error, reason} = err ->
+          Logger.error("[agent_demo] demo failed: #{inspect(reason)}")
+          err
+      end
+    end
+  end
 end
