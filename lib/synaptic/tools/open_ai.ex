@@ -184,7 +184,18 @@ defmodule Synaptic.Tools.OpenAI do
     case Keyword.get(opts, :tools) do
       nil -> body
       [] -> body
-      tools -> Map.merge(body, %{tools: tools, tool_choice: "auto"})
+      tools ->
+        body
+        |> Map.put(:tools, tools)
+        |> Map.put(:tool_choice, Keyword.get(opts, :tool_choice, "auto"))
+        |> maybe_put_parallel_tool_calls(opts)
+    end
+  end
+
+  defp maybe_put_parallel_tool_calls(body, opts) do
+    case Keyword.fetch(opts, :parallel_tool_calls) do
+      {:ok, value} when is_boolean(value) -> Map.put(body, :parallel_tool_calls, value)
+      _ -> body
     end
   end
 

@@ -114,9 +114,16 @@ and available, the runtime can execute it via `Synaptic.start/3`.
     `agent: :name` option.
   - `Synaptic.Tools.chat/2` merges options, picks the adapter, and delegates to
     `adapter.chat/2`. Pass `tools: [...]` with `%Synaptic.Tools.Tool{}` structs to
-    enable OpenAI-style tool calling; the helper will execute the tool handlers
-    whenever the model emits `tool_calls` and continue the conversation until a
-    final assistant response is produced.
+    enable local OpenAI-style tool calling.
+  - `Synaptic.Tools.chat/2` also accepts `mcp: [...]` entries. MCP connections are
+    normalized via `Synaptic.MCP`, discovered once per top-level call, and merged
+    into the same internal tool loop used for local tools.
+  - MCP tools are namespaced before being sent to the LLM. If a server supports
+    resources, Synaptic exposes synthetic `list_resources` and `read_resource`
+    tools instead of auto-injecting resource content into the prompt.
+  - Discovery failures fail the entire call with
+    `{:error, {:mcp_discovery_failed, server_name, reason}}`. Execution-time MCP
+    failures are returned to the model as tool payloads so the loop can continue.
 - `Synaptic.Tools.OpenAI` is the default adapter. It builds a Finch request with a
   JSON body, sends it via `Synaptic.Finch`, and returns either `{:ok, content}` or
   `{:ok, content, %{usage: %{...}}}` (with usage metrics). Lack of an API key raises
@@ -124,6 +131,10 @@ and available, the runtime can execute it via `Synaptic.start/3`.
   `Finch.stream/4` to handle Server-Sent Events (SSE) from OpenAI, parsing chunks
   and accumulating content. Streaming automatically falls back to non-streaming when
   tools are provided.
+- `Synaptic.MCP` is the facade for MCP connection normalization, transport
+  delegation, and telemetry. The first transport adapter is
+  `Synaptic.MCP.Adapters.HTTP`, which uses Finch to make JSON-RPC calls for
+  `tools/list`, `tools/call`, `resources/list`, and `resources/read`.
 - **Usage metrics**: Adapters can optionally return usage information (token counts,
   cost, etc.) in a third tuple element: `{:ok, content, %{usage: %{...}}}`. The
   OpenAI adapter automatically extracts `prompt_tokens`, `completion_tokens`, and
@@ -133,6 +144,8 @@ and available, the runtime can execute it via `Synaptic.start/3`.
   `[:synaptic, :llm]`, emitting `:start`, `:stop`, and `:exception` events with
   metadata including `run_id`, `step_name`, `adapter`, `model`, `stream`, and
   optional `usage` metrics.
+  MCP operations emit separate spans under `[:synaptic, :mcp, ...]` for
+  discovery, tool calls, resource listing, and resource reads.
 
 ## Streaming implementation
 

@@ -29,3 +29,9 @@ synaptic-*.tar
 
 sidecar/playwright/node_modules
 sidecar/playwright/.npmrc
+
+sidecar/browser-use/.env
+sidecar/browser-use/__pycache__/
+lib/synaptic/dev/om_demo.ex
+lib/synaptic/dev/om_search_demo.ex
+lib/synaptic/dev/vin_deep_search_demo.ex
