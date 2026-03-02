@@ -128,6 +128,53 @@ When the LLM requests a tool (via `function_call`/`tool_calls`), Synaptic invoke
 the handler, appends the tool response to the conversation, and re-issues the
 chat request until the model produces a final assistant message.
 
+### MCP tools and resources
+
+`Synaptic.Tools.chat/2` also accepts `mcp:` entries alongside local `tools:`:
+
+```elixir
+{:ok, response} =
+  Synaptic.Tools.chat(messages,
+    tools: [tool],
+    mcp: [:github]
+  )
+```
+
+Each `mcp:` entry can be:
+
+- a `%Synaptic.MCP.Connection{}` struct
+- an atom resolved from `config :synaptic, Synaptic.MCP, servers: [...]`
+- a map/keyword descriptor that is normalized into a connection
+
+Example config:
+
+```elixir
+config :synaptic, Synaptic.MCP,
+  servers: [
+    github: [
+      transport: :http,
+      adapter: Synaptic.MCP.Adapters.HTTP,
+      base_url: "http://localhost:4001/mcp"
+    ]
+  ]
+```
+
+For each MCP server, Synaptic discovers remote tools once per `chat/2` call and
+namespaces them before sending them to the LLM. If the server supports
+resources, Synaptic also registers synthetic tools:
+
+- `#{server_name}__list_resources`
+- `#{server_name}__read_resource`
+
+Resources are not injected into the prompt automatically. The model reads them
+explicitly through those synthetic tools.
+
+If any MCP server fails discovery, the call returns:
+
+```elixir
+{:error, {:mcp_discovery_failed, server_name, reason}}
+```
+
 ### Structured JSON responses
 
 OpenAI's `response_format: %{type: "json_object"}` (and compatible JSON schema
@@ -199,7 +246,8 @@ end
 **Important limitations:**
 
 - Streaming automatically falls back to non-streaming mode when tools are
-  provided, as OpenAI's streaming API doesn't support tool calling
+  provided, including MCP-backed tools, as OpenAI's streaming API doesn't
+  support tool calling
 - Streaming doesn't support `response_format` options (JSON mode)
 - The step function still receives the complete accumulated content when
   streaming finishes
