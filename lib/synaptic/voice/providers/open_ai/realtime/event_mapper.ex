@@ -1,7 +1,5 @@
-defmodule Synaptic.Voice.OpenAI.RealtimeMapper do
-  @moduledoc """
-  Normalizes OpenAI realtime payloads into Synaptic realtime voice events.
-  """
+defmodule Synaptic.Voice.Providers.OpenAI.Realtime.EventMapper do
+  @moduledoc false
 
   @spec normalize_event(map()) :: {:ok, %{event: atom(), data: map()}} | {:ignore, term()}
   def normalize_event(%{
@@ -55,7 +53,6 @@ defmodule Synaptic.Voice.OpenAI.RealtimeMapper do
     {:ok, %{event: :duplex_interruption, data: %{reason: :speech_started}}}
   end
 
-  # Benign when we attempt a cancel while no provider response is active.
   def normalize_event(%{
         "type" => "error",
         "error" => %{"code" => "response_cancel_not_active"}

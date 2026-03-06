@@ -339,7 +339,14 @@ defmodule Synaptic.Runner do
           |> push_history(%{step: step.name, status: :routed, target: target_step})
           |> publish_event(%{event: :step_routed, step: step.name, target: target_step})
 
-        run_scorers_async(step, state.workflow, state.run_id, pre_context, new_state.context, data)
+        run_scorers_async(
+          step,
+          state.workflow,
+          state.run_id,
+          pre_context,
+          new_state.context,
+          data
+        )
 
         {:continue, new_state}
     end

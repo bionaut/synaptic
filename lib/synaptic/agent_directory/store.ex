@@ -11,7 +11,8 @@ defmodule Synaptic.AgentDirectory.Store do
   @callback list_services(map()) :: [record()]
 
   @callback put_instance(record()) :: {:ok, record()} | {:error, term()}
-  @callback update_instance(String.t(), String.t(), (record() -> record())) :: {:ok, record()} | :error
+  @callback update_instance(String.t(), String.t(), (record() -> record())) ::
+              {:ok, record()} | :error
   @callback delete_instance(String.t(), String.t()) :: :ok
   @callback get_instance(String.t(), String.t()) :: {:ok, record()} | :error
   @callback list_instances(map()) :: [record()]

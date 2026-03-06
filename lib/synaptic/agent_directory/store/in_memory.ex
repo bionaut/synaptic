@@ -21,33 +21,50 @@ defmodule Synaptic.AgentDirectory.Store.InMemory do
   @impl true
   def put_service(record), do: GenServer.call(__MODULE__, {:put_service, record})
   @impl true
-  def delete_service(tenant_id, service_id), do: GenServer.call(__MODULE__, {:delete_service, tenant_id, service_id})
+  def delete_service(tenant_id, service_id),
+    do: GenServer.call(__MODULE__, {:delete_service, tenant_id, service_id})
+
   @impl true
-  def get_service(tenant_id, service_id), do: GenServer.call(__MODULE__, {:get_service, tenant_id, service_id})
+  def get_service(tenant_id, service_id),
+    do: GenServer.call(__MODULE__, {:get_service, tenant_id, service_id})
+
   @impl true
   def list_services(filters), do: GenServer.call(__MODULE__, {:list_services, filters})
 
   @impl true
   def put_instance(record), do: GenServer.call(__MODULE__, {:put_instance, record})
   @impl true
-  def update_instance(tenant_id, instance_id, fun), do: GenServer.call(__MODULE__, {:update_instance, tenant_id, instance_id, fun})
+  def update_instance(tenant_id, instance_id, fun),
+    do: GenServer.call(__MODULE__, {:update_instance, tenant_id, instance_id, fun})
+
   @impl true
-  def delete_instance(tenant_id, instance_id), do: GenServer.call(__MODULE__, {:delete_instance, tenant_id, instance_id})
+  def delete_instance(tenant_id, instance_id),
+    do: GenServer.call(__MODULE__, {:delete_instance, tenant_id, instance_id})
+
   @impl true
-  def get_instance(tenant_id, instance_id), do: GenServer.call(__MODULE__, {:get_instance, tenant_id, instance_id})
+  def get_instance(tenant_id, instance_id),
+    do: GenServer.call(__MODULE__, {:get_instance, tenant_id, instance_id})
+
   @impl true
   def list_instances(filters), do: GenServer.call(__MODULE__, {:list_instances, filters})
 
   @impl true
   def put_task_reference(record), do: GenServer.call(__MODULE__, {:put_task_reference, record})
   @impl true
-  def update_task_reference(tenant_id, task_ref_id, fun), do: GenServer.call(__MODULE__, {:update_task_reference, tenant_id, task_ref_id, fun})
+  def update_task_reference(tenant_id, task_ref_id, fun),
+    do: GenServer.call(__MODULE__, {:update_task_reference, tenant_id, task_ref_id, fun})
+
   @impl true
-  def get_task_reference(tenant_id, task_ref_id), do: GenServer.call(__MODULE__, {:get_task_reference, tenant_id, task_ref_id})
+  def get_task_reference(tenant_id, task_ref_id),
+    do: GenServer.call(__MODULE__, {:get_task_reference, tenant_id, task_ref_id})
+
   @impl true
-  def list_task_references(filters), do: GenServer.call(__MODULE__, {:list_task_references, filters})
+  def list_task_references(filters),
+    do: GenServer.call(__MODULE__, {:list_task_references, filters})
+
   @impl true
-  def delete_task_reference(tenant_id, task_ref_id), do: GenServer.call(__MODULE__, {:delete_task_reference, tenant_id, task_ref_id})
+  def delete_task_reference(tenant_id, task_ref_id),
+    do: GenServer.call(__MODULE__, {:delete_task_reference, tenant_id, task_ref_id})
 
   @impl true
   def reset!, do: GenServer.call(__MODULE__, :reset)
@@ -147,10 +164,17 @@ defmodule Synaptic.AgentDirectory.Store.InMemory do
   defp filter_records(records, filters) do
     Enum.filter(records, fn record ->
       Enum.all?(filters, fn
-        {_k, nil} -> true
-        {:status, statuses} when is_list(statuses) -> Map.get(record, :status) in statuses
-        {:alias, alias_key} when is_binary(alias_key) -> alias_key in Map.get(record, :alias_keys, [])
-        {k, v} -> Map.get(record, k) == v
+        {_k, nil} ->
+          true
+
+        {:status, statuses} when is_list(statuses) ->
+          Map.get(record, :status) in statuses
+
+        {:alias, alias_key} when is_binary(alias_key) ->
+          alias_key in Map.get(record, :alias_keys, [])
+
+        {k, v} ->
+          Map.get(record, k) == v
       end)
     end)
   end

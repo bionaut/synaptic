@@ -193,14 +193,18 @@ defmodule Synaptic.AgentDirectory do
       |> sort_task_refs(query)
 
     case candidates do
-      [] -> {:error, :not_found}
+      [] ->
+        {:error, :not_found}
+
       [a, b | _] = many ->
         if same_rank?(query, a, b) do
           {:error, :ambiguous_task_reference, Enum.take(many, 10)}
         else
           {:ok, a}
         end
-      [one] -> {:ok, one}
+
+      [one] ->
+        {:ok, one}
     end
   end
 
@@ -238,7 +242,10 @@ defmodule Synaptic.AgentDirectory do
 
   defp maybe_require_active(records, query) do
     if Map.get(query, :require_active, false) do
-      Enum.filter(records, &(Map.get(&1, :status) in [:starting, :ready, :running, :waiting_for_human, :busy]))
+      Enum.filter(
+        records,
+        &(Map.get(&1, :status) in [:starting, :ready, :running, :waiting_for_human, :busy])
+      )
     else
       records
     end
@@ -246,15 +253,25 @@ defmodule Synaptic.AgentDirectory do
 
   defp maybe_filter_task_ref_recency(records, %{recency: {:within_ms, ms}}) do
     cutoff = DateTime.add(DateTime.utc_now(), -div(ms, 1000), :second)
-    Enum.filter(records, &(DateTime.compare(Map.get(&1, :last_activity_at) || Map.get(&1, :updated_at), cutoff) != :lt))
+
+    Enum.filter(
+      records,
+      &(DateTime.compare(Map.get(&1, :last_activity_at) || Map.get(&1, :updated_at), cutoff) !=
+          :lt)
+    )
   end
 
   defp maybe_filter_task_ref_recency(records, _query), do: records
 
   defp sort_task_refs(records, query) do
-    Enum.sort_by(records, fn rec ->
-      {rank_alias(rec, query), rank_purpose(rec, query), rank_active(rec), rec.last_activity_at, rec.inserted_at, rec.task_ref_id}
-    end, fn a, b -> compare_sort_tuple(a, b, Map.get(query, :recency, :latest)) end)
+    Enum.sort_by(
+      records,
+      fn rec ->
+        {rank_alias(rec, query), rank_purpose(rec, query), rank_active(rec), rec.last_activity_at,
+         rec.inserted_at, rec.task_ref_id}
+      end,
+      fn a, b -> compare_sort_tuple(a, b, Map.get(query, :recency, :latest)) end
+    )
   end
 
   defp compare_sort_tuple(a, b, :oldest), do: a <= b
@@ -273,12 +290,16 @@ defmodule Synaptic.AgentDirectory do
   defp rank_purpose(_rec, _query), do: 0
 
   defp rank_active(rec) do
-    if Map.get(rec, :status) in [:starting, :ready, :running, :waiting_for_human, :busy], do: 1, else: 0
+    if Map.get(rec, :status) in [:starting, :ready, :running, :waiting_for_human, :busy],
+      do: 1,
+      else: 0
   end
 
   defp same_rank?(query, a, b) do
-    {rank_alias(a, query), rank_purpose(a, query), rank_active(a), a.last_activity_at, a.inserted_at} ==
-      {rank_alias(b, query), rank_purpose(b, query), rank_active(b), b.last_activity_at, b.inserted_at}
+    {rank_alias(a, query), rank_purpose(a, query), rank_active(a), a.last_activity_at,
+     a.inserted_at} ==
+      {rank_alias(b, query), rank_purpose(b, query), rank_active(b), b.last_activity_at,
+       b.inserted_at}
   end
 
   defp normalize_service_spec(spec, service_id, tenant_id) do
@@ -353,6 +374,7 @@ defmodule Synaptic.AgentDirectory do
   defp caller_ctx(opts) do
     ctx = opts[:caller_ctx] || %{}
     defaults = AgentPolicy.scope_defaults(ctx)
+
     Map.merge(defaults, ctx)
     |> Map.put_new(:tenant_id, tenant_id(opts))
   end

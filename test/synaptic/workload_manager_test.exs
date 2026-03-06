@@ -103,20 +103,20 @@ defmodule Synaptic.WorkloadManagerTest do
     pid = self()
 
     {:ok, _} =
-      AgentDirectory.register_instance(
-        %{
-          instance_id: "inst_pid_1",
-          service_id: "echo",
-          user_id: "u1",
-          status: :ready,
-          endpoint_type: :pid,
-          endpoint_ref: pid,
-          visibility: :tenant
-        }
-      )
+      AgentDirectory.register_instance(%{
+        instance_id: "inst_pid_1",
+        service_id: "echo",
+        user_id: "u1",
+        status: :ready,
+        endpoint_type: :pid,
+        endpoint_ref: pid,
+        visibility: :tenant
+      })
 
     assert {:error, :unsupported_endpoint} =
-             WorkloadManager.stop_instance("inst_pid_1", :normal, caller_ctx: %{tenant_id: "default", user_id: "u1"})
+             WorkloadManager.stop_instance("inst_pid_1", :normal,
+               caller_ctx: %{tenant_id: "default", user_id: "u1"}
+             )
   end
 
   test "unsupported provider returns spawn_failed tuple via ensure_instance" do
@@ -133,7 +133,10 @@ defmodule Synaptic.WorkloadManagerTest do
       )
 
     assert {:error, :spawn_failed, {:unsupported_provider, {:adapter, :noop}}} =
-             WorkloadManager.ensure_instance("unsupported.provider", %{tenant_id: "default", user_id: "u1"})
+             WorkloadManager.ensure_instance("unsupported.provider", %{
+               tenant_id: "default",
+               user_id: "u1"
+             })
   end
 
   defp assert_eventually(fun, attempts \\ 50)

@@ -16,7 +16,11 @@ defmodule Synaptic.WorkloadManager do
   end
 
   def ensure_instance(service_id, caller_ctx, opts \\ []) do
-    GenServer.call(__MODULE__, {:ensure_instance, service_id, caller_ctx, opts}, Keyword.get(opts, :timeout, 15_000))
+    GenServer.call(
+      __MODULE__,
+      {:ensure_instance, service_id, caller_ctx, opts},
+      Keyword.get(opts, :timeout, 15_000)
+    )
   end
 
   def start_workflow_instance(service_id, payload, opts \\ []) do
@@ -27,7 +31,11 @@ defmodule Synaptic.WorkloadManager do
   def stop_instance(instance_id, reason \\ :normal, opts \\ []) do
     tenant_id = Keyword.get(opts, :tenant_id, "default")
 
-    with {:ok, inst} <- AgentDirectory.lookup_instance(instance_id, tenant_id: tenant_id, caller_ctx: Keyword.get(opts, :caller_ctx, %{})) do
+    with {:ok, inst} <-
+           AgentDirectory.lookup_instance(instance_id,
+             tenant_id: tenant_id,
+             caller_ctx: Keyword.get(opts, :caller_ctx, %{})
+           ) do
       case {inst.endpoint_type, inst.endpoint_ref} do
         {:run_id, run_id} -> Synaptic.stop(run_id, reason)
         _ -> {:error, :unsupported_endpoint}
@@ -38,7 +46,11 @@ defmodule Synaptic.WorkloadManager do
   def instance_status(instance_id, opts \\ []) do
     tenant_id = Keyword.get(opts, :tenant_id, "default")
 
-    with {:ok, inst} <- AgentDirectory.lookup_instance(instance_id, tenant_id: tenant_id, caller_ctx: Keyword.get(opts, :caller_ctx, %{})) do
+    with {:ok, inst} <-
+           AgentDirectory.lookup_instance(instance_id,
+             tenant_id: tenant_id,
+             caller_ctx: Keyword.get(opts, :caller_ctx, %{})
+           ) do
       status =
         case {inst.endpoint_type, inst.endpoint_ref} do
           {:run_id, run_id} -> safe_inspect(run_id)
@@ -62,7 +74,12 @@ defmodule Synaptic.WorkloadManager do
     with {:ok, service} <- get_service(tenant_id, service_id) do
       case maybe_reuse_instance(service, caller_ctx, opts, reuse?) do
         {:ok, inst} ->
-          {:reply, {:ok, %{instance: inst, task_reference: maybe_find_task_ref(tenant_id, inst.instance_id, caller_ctx)}}, state}
+          {:reply,
+           {:ok,
+            %{
+              instance: inst,
+              task_reference: maybe_find_task_ref(tenant_id, inst.instance_id, caller_ctx)
+            }}, state}
 
         :none ->
           case start_instance_for_service(service, caller_ctx, opts, state) do
@@ -87,12 +104,20 @@ defmodule Synaptic.WorkloadManager do
         status = event_to_status(event)
         last_error = event[:reason]
         now = DateTime.utc_now()
+
         _ =
-          AgentDirectory.update_instance(instance_id, %{status: status, last_error: last_error, last_activity_at: now},
+          AgentDirectory.update_instance(
+            instance_id,
+            %{status: status, last_error: last_error, last_activity_at: now},
             tenant_id: tenant_id
           )
 
-        _ = AgentDirectory.update_task_reference(task_ref_id, %{status: status, last_activity_at: now, run_id: run_id, instance_id: instance_id}, tenant_id: tenant_id)
+        _ =
+          AgentDirectory.update_task_reference(
+            task_ref_id,
+            %{status: status, last_activity_at: now, run_id: run_id, instance_id: instance_id},
+            tenant_id: tenant_id
+          )
 
         new_state =
           if status in [:completed, :failed, :stopped] do
@@ -108,10 +133,14 @@ defmodule Synaptic.WorkloadManager do
   defp maybe_reuse_instance(service, caller_ctx, opts, true) do
     tenant_id = service.tenant_id
     base_filters = %{tenant_id: tenant_id, service_id: service.service_id}
+
     filters =
       base_filters
       |> maybe_put(:user_id, Map.get(caller_ctx, :user_id))
-      |> maybe_put(:session_id, Keyword.get(opts, :session_id) || Map.get(caller_ctx, :session_id))
+      |> maybe_put(
+        :session_id,
+        Keyword.get(opts, :session_id) || Map.get(caller_ctx, :session_id)
+      )
 
     AgentDirectory.list_instances(filters, tenant_id: tenant_id, caller_ctx: caller_ctx)
     |> Enum.filter(&(&1.status in @active_statuses))
@@ -129,7 +158,10 @@ defmodule Synaptic.WorkloadManager do
     user_id = Map.get(caller_ctx, :user_id)
 
     if user_id do
-      case AgentDirectory.resolve_task_reference(%{tenant_id: tenant_id, user_id: user_id, require_active: true, recency: :latest}, tenant_id: tenant_id) do
+      case AgentDirectory.resolve_task_reference(
+             %{tenant_id: tenant_id, user_id: user_id, require_active: true, recency: :latest},
+             tenant_id: tenant_id
+           ) do
         {:ok, task} when task.instance_id == instance_id -> task
         _ -> nil
       end
@@ -162,7 +194,8 @@ defmodule Synaptic.WorkloadManager do
                 endpoint_ref: run_id,
                 health: :healthy,
                 visibility: service.visibility,
-                metadata: Map.put(service.metadata || %{}, :owner_user_id, Map.get(caller_ctx, :user_id))
+                metadata:
+                  Map.put(service.metadata || %{}, :owner_user_id, Map.get(caller_ctx, :user_id))
               },
               tenant_id: service.tenant_id
             )
@@ -190,7 +223,12 @@ defmodule Synaptic.WorkloadManager do
 
           :ok = PubSub.subscribe(Synaptic.PubSub, "synaptic:run:" <> run_id)
 
-          new_state = put_in(state.runs[run_id], %{tenant_id: service.tenant_id, instance_id: instance.instance_id, task_ref_id: task_ref.task_ref_id})
+          new_state =
+            put_in(state.runs[run_id], %{
+              tenant_id: service.tenant_id,
+              instance_id: instance.instance_id,
+              task_ref_id: task_ref.task_ref_id
+            })
 
           handle = %AgentHandle{
             target_type: :instance,
@@ -225,7 +263,17 @@ defmodule Synaptic.WorkloadManager do
             tenant_id: service.tenant_id
           )
 
-        {:ok, %{instance: instance, task_reference: nil, handle: %AgentHandle{target_type: :instance, instance_id: instance_id, service_id: service.service_id, tenant_id: service.tenant_id}}, state}
+        {:ok,
+         %{
+           instance: instance,
+           task_reference: nil,
+           handle: %AgentHandle{
+             target_type: :instance,
+             instance_id: instance_id,
+             service_id: service.service_id,
+             tenant_id: service.tenant_id
+           }
+         }, state}
 
       other ->
         {:error, {:unsupported_provider, other}}
@@ -244,7 +292,8 @@ defmodule Synaptic.WorkloadManager do
     if is_list(aliases), do: Enum.map(aliases, &to_string/1), else: []
   end
 
-  defp maybe_put_requested_run_id(workflow_opts, payload) when is_list(workflow_opts) and is_map(payload) do
+  defp maybe_put_requested_run_id(workflow_opts, payload)
+       when is_list(workflow_opts) and is_map(payload) do
     case Map.get(payload, :run_id) do
       run_id when is_binary(run_id) and run_id != "" ->
         Keyword.put_new(workflow_opts, :run_id, run_id)

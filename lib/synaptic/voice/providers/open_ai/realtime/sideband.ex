@@ -1,11 +1,5 @@
-defmodule Synaptic.Voice.OpenAI.RealtimeSideband do
-  @moduledoc """
-  Sideband adapter for OpenAI realtime events.
-
-  This adapter currently acts as a server-controlled relay: provider events are
-  ingested from the host app and outbound control events are emitted back to the
-  owning realtime session.
-  """
+defmodule Synaptic.Voice.Providers.OpenAI.Realtime.Sideband do
+  @moduledoc false
 
   use GenServer
 

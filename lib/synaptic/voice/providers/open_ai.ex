@@ -1,9 +1,9 @@
-defmodule Synaptic.Voice.OpenAI do
+defmodule Synaptic.Voice.Providers.OpenAI do
   @moduledoc false
 
   def config(opts) do
     Keyword.get(opts, :config, [])
-    |> Keyword.merge(Application.get_env(:synaptic, Synaptic.Voice.OpenAI, []))
+    |> Keyword.merge(Application.get_env(:synaptic, __MODULE__, []))
   end
 
   def api_key(opts) do

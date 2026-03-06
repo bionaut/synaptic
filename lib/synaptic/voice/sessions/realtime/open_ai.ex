@@ -1,14 +1,12 @@
-defmodule Synaptic.Voice.Realtime.Session do
-  @moduledoc """
-  GenServer that orchestrates realtime voice sessions with workflow-per-turn execution.
-  """
+defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
+  @moduledoc false
 
   use GenServer
   require Logger
 
   alias Phoenix.PubSub
-  alias Synaptic.Voice.Event
-  alias Synaptic.Voice.OpenAI.{RealtimeMapper, RealtimeSideband, WebRTCHelper}
+  alias Synaptic.Voice.{Event, SessionRegistry}
+  alias Synaptic.Voice.Providers.OpenAI.Realtime.{EventMapper, SessionBootstrap, Sideband}
 
   @default_timeout_ms 30_000
 
@@ -17,30 +15,6 @@ defmodule Synaptic.Voice.Realtime.Session do
     "Sure, I can look that up.",
     "Okay, give me a moment while I verify that."
   ]
-
-  @type state :: %{
-          session_id: String.t(),
-          run_id: String.t(),
-          status: atom(),
-          seq: non_neg_integer(),
-          keep_alive: boolean(),
-          realtime: map(),
-          model: String.t(),
-          voice: String.t(),
-          preferred_language: String.t(),
-          sideband_adapter: module(),
-          sideband_pid: pid(),
-          cancel_on_interrupt: boolean(),
-          workflow_timeout_ms: pos_integer(),
-          backchannel_phrases: [String.t()],
-          backchannel_enabled: boolean(),
-          suppress_provider_responses_during_workflow: boolean(),
-          current_task: %{task: Task.t(), input: String.t()} | nil,
-          response_active: boolean(),
-          last_final_input:
-            %{item_id: String.t() | nil, text: String.t(), at_ms: integer()} | nil,
-          telemetry_marks: map()
-        }
 
   def child_spec(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
@@ -54,41 +28,38 @@ defmodule Synaptic.Voice.Realtime.Session do
 
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
-    GenServer.start_link(__MODULE__, opts, name: Synaptic.Voice.Realtime.Registry.via(session_id))
+    metadata = Keyword.get(opts, :registry_metadata, %{})
+    GenServer.start_link(__MODULE__, opts, name: SessionRegistry.via(session_id, metadata))
   end
 
-  def stop_session(session_id, reason \\ :normal) do
-    GenServer.call(Synaptic.Voice.Realtime.Registry.via(session_id), {:stop_session, reason})
-  end
+  def stop_session(pid, reason \\ :normal), do: GenServer.call(pid, {:stop_session, reason})
+  def inspect_session(pid), do: GenServer.call(pid, :inspect_session)
+  def client_connected(pid, meta \\ %{}), do: GenServer.call(pid, {:client_connected, meta})
+  def client_disconnected(pid, meta \\ %{}), do: GenServer.call(pid, {:client_disconnected, meta})
 
-  def inspect_session(session_id) do
-    GenServer.call(Synaptic.Voice.Realtime.Registry.via(session_id), :inspect_session)
-  end
+  def ingest_provider_event(pid, payload) when is_map(payload),
+    do: GenServer.call(pid, {:ingest_provider_event, payload})
 
-  def ingest_provider_event(session_id, payload) when is_map(payload) do
-    GenServer.call(
-      Synaptic.Voice.Realtime.Registry.via(session_id),
-      {:ingest_provider_event, payload}
-    )
-  end
-
-  def client_connected(session_id, meta \\ %{}) when is_map(meta) do
-    GenServer.call(Synaptic.Voice.Realtime.Registry.via(session_id), {:client_connected, meta})
-  end
-
-  def client_disconnected(session_id, meta \\ %{}) when is_map(meta) do
-    GenServer.call(Synaptic.Voice.Realtime.Registry.via(session_id), {:client_disconnected, meta})
-  end
+  def push_audio(_pid, _chunk, _opts \\ []), do: {:error, :unsupported_for_mode}
+  def push_text(_pid, _text, _opts \\ []), do: {:error, :unsupported_for_mode}
+  def end_turn(_pid, _opts \\ []), do: {:error, :unsupported_for_mode}
+  def cancel_output(_pid), do: {:error, :unsupported_for_mode}
 
   @impl true
   def init(opts) do
     run_id = Keyword.fetch!(opts, :run_id)
     session_id = Keyword.fetch!(opts, :session_id)
+    provider_modules = Keyword.fetch!(opts, :provider_modules)
+    stack = Keyword.fetch!(opts, :stack)
+    stack_opts = Keyword.get(opts, :stack_opts, %{})
 
-    config = Application.get_env(:synaptic, Synaptic.Voice.Realtime, [])
+    config = Application.get_env(:synaptic, Synaptic.Voice.Providers.OpenAI, [])
+    realtime_opts = provider_opts(stack_opts, :realtime)
 
-    model = Keyword.get(opts, :model, config[:model] || "gpt-4o-realtime-preview")
-    voice = Keyword.get(opts, :voice, config[:voice] || "alloy")
+    model =
+      Keyword.get(realtime_opts, :model, config[:realtime_model] || "gpt-4o-realtime-preview")
+
+    voice = Keyword.get(realtime_opts, :voice, config[:voice] || "alloy")
 
     preferred_language =
       Keyword.get(opts, :preferred_language, config[:preferred_language] || "en")
@@ -118,14 +89,13 @@ defmodule Synaptic.Voice.Realtime.Session do
         config[:suppress_provider_responses_during_workflow] != false
       )
 
-    sideband_adapter =
-      Keyword.get(opts, :sideband_adapter, config[:sideband_adapter] || RealtimeSideband)
+    sideband_adapter = Keyword.get(opts, :sideband_adapter, config[:sideband_adapter] || Sideband)
 
     bootstrap_fun =
-      Keyword.get(opts, :webrtc_bootstrap_fun, &WebRTCHelper.create_browser_bootstrap/1)
+      Keyword.get(opts, :webrtc_bootstrap_fun, &SessionBootstrap.create_browser_bootstrap/1)
 
     bootstrap_opts =
-      opts
+      realtime_opts
       |> Keyword.put(:model, model)
       |> Keyword.put(:voice, voice)
       |> Keyword.put_new(:transcription_language, preferred_language)
@@ -138,9 +108,13 @@ defmodule Synaptic.Voice.Realtime.Session do
       state = %{
         session_id: session_id,
         run_id: run_id,
+        mode: :realtime,
+        stack: stack,
+        provider_modules: provider_modules,
         status: :connecting,
         seq: 0,
         keep_alive: keep_alive,
+        transport: public_transport(realtime),
         realtime: realtime,
         model: model,
         voice: voice,
@@ -155,52 +129,38 @@ defmodule Synaptic.Voice.Realtime.Session do
         current_task: nil,
         response_active: false,
         last_final_input: nil,
-        telemetry_marks: %{}
+        telemetry_marks: %{},
+        latency: %{}
       }
 
       :telemetry.execute(
         [:synaptic, :voice, :realtime, :session, :start],
         %{},
-        %{session_id: session_id, run_id: run_id, model: model, voice: voice}
+        telemetry_metadata(state)
       )
 
       {:ok,
        state
-       |> emit(:session_started, %{realtime: public_realtime(realtime)})
-       |> emit(:duplex_state_changed, %{status: :connecting, mode: :duplex})}
+       |> emit(:session_started, %{mode: :realtime, stack: stack, transport: state.transport})
+       |> emit(:duplex_state_changed, %{status: :connecting, mode: :realtime})}
     end
   end
 
   @impl true
   def handle_call(:inspect_session, _from, state) do
-    payload =
-      Map.take(state, [
-        :session_id,
-        :run_id,
-        :status,
-        :seq,
-        :keep_alive,
-        :model,
-        :voice,
-        :preferred_language,
-        :cancel_on_interrupt,
-        :workflow_timeout_ms,
-        :response_active,
-        :realtime
-      ])
-
-    {:reply, payload, state}
+    {:reply, public_state(state), state}
   end
 
   def handle_call({:client_connected, meta}, _from, state) do
     {:reply, :ok,
      state
      |> update_status(:listening)
-     |> emit(:duplex_state_changed, %{status: :listening, mode: :duplex, meta: meta})}
+     |> emit(:duplex_state_changed, %{status: :listening, mode: :realtime, meta: meta})}
   end
 
   def handle_call({:client_disconnected, meta}, _from, state) do
-    state = emit(state, :duplex_state_changed, %{status: :connecting, mode: :duplex, meta: meta})
+    state =
+      emit(state, :duplex_state_changed, %{status: :connecting, mode: :realtime, meta: meta})
 
     if state.keep_alive do
       {:reply, :ok, %{state | status: :connecting}}
@@ -231,7 +191,7 @@ defmodule Synaptic.Voice.Realtime.Session do
     {:noreply,
      state
      |> update_status(:listening)
-     |> emit(:duplex_state_changed, %{status: :listening, mode: :duplex})}
+     |> emit(:duplex_state_changed, %{status: :listening, mode: :realtime})}
   end
 
   def handle_info({:synaptic_event, %{event: event}}, state)
@@ -256,7 +216,7 @@ defmodule Synaptic.Voice.Realtime.Session do
       :telemetry.execute(
         [:synaptic, :voice, :realtime, :workflow, :cancel],
         %{},
-        %{session_id: state.session_id, run_id: state.run_id, reason: reason}
+        Map.put(telemetry_metadata(state), :reason, reason)
       )
     end
 
@@ -272,19 +232,46 @@ defmodule Synaptic.Voice.Realtime.Session do
 
     state
     |> emit(:session_stopped, %{reason: inspect(reason)})
-    |> then(fn new_state ->
+    |> then(fn final_state ->
       :telemetry.execute(
         [:synaptic, :voice, :realtime, :session, :stop],
         %{},
-        %{session_id: new_state.session_id, run_id: new_state.run_id, reason: reason}
+        Map.put(telemetry_metadata(final_state), :reason, reason)
       )
     end)
 
     :ok
   end
 
+  defp provider_opts(stack_opts, role) do
+    case Map.get(stack_opts, role) do
+      {_provider, opts} -> opts
+      _ -> []
+    end
+  end
+
+  defp public_state(state) do
+    %{
+      session_id: state.session_id,
+      run_id: state.run_id,
+      mode: :realtime,
+      status: state.status,
+      seq: state.seq,
+      stack: state.stack,
+      provider_modules: Map.take(state.provider_modules, [:stt, :tts, :realtime]),
+      transport: state.transport,
+      latency: state.latency,
+      engine_state: %{
+        response_active: state.response_active,
+        current_task_active: not is_nil(state.current_task),
+        last_final_input: state.last_final_input,
+        preferred_language: state.preferred_language
+      }
+    }
+  end
+
   defp process_provider_event(payload, state) do
-    case RealtimeMapper.normalize_event(payload) do
+    case EventMapper.normalize_event(payload) do
       {:ok, %{event: :input_partial_text, data: %{text: text}}} ->
         state
         |> update_status(:listening)
@@ -316,7 +303,7 @@ defmodule Synaptic.Voice.Realtime.Session do
           |> update_status(:speaking)
           |> Map.put(:response_active, true)
           |> emit(:assistant_response_started, data)
-          |> emit(:duplex_state_changed, %{status: :speaking, mode: :duplex})
+          |> emit(:duplex_state_changed, %{status: :speaking, mode: :realtime})
         end
 
       {:ok, %{event: :assistant_response_done, data: data}} ->
@@ -327,14 +314,14 @@ defmodule Synaptic.Voice.Realtime.Session do
           |> update_status(:listening)
           |> Map.put(:response_active, false)
           |> emit(:assistant_response_done, data)
-          |> emit(:duplex_state_changed, %{status: :listening, mode: :duplex})
+          |> emit(:duplex_state_changed, %{status: :listening, mode: :realtime})
         end
 
       {:ok, %{event: :duplex_interruption, data: data}} ->
         state
         |> maybe_interrupt_response_only()
         |> emit(:duplex_interruption, data)
-        |> emit(:duplex_state_changed, %{status: :listening, mode: :duplex})
+        |> emit(:duplex_state_changed, %{status: :listening, mode: :realtime})
 
       {:ok, %{event: :session_error, data: data}} ->
         log_provider_error(state, data)
@@ -374,7 +361,7 @@ defmodule Synaptic.Voice.Realtime.Session do
           |> update_status(:thinking)
           |> put_telemetry_mark(:user_final_at_ms, started_at)
           |> emit(:input_final_text, %{text: trimmed})
-          |> emit(:duplex_state_changed, %{status: :thinking, mode: :duplex})
+          |> emit(:duplex_state_changed, %{status: :thinking, mode: :realtime})
 
         state
         |> maybe_send_backchannel()
@@ -407,7 +394,7 @@ defmodule Synaptic.Voice.Realtime.Session do
       :telemetry.execute(
         [:synaptic, :voice, :realtime, :interrupt],
         %{},
-        %{session_id: state.session_id, run_id: state.run_id}
+        telemetry_metadata(state)
       )
 
       emit(state, :duplex_interruption, %{reason: :cancel_and_restart})
@@ -416,8 +403,6 @@ defmodule Synaptic.Voice.Realtime.Session do
     end
   end
 
-  # Speech-start interruptions should stop active provider speech quickly, but
-  # should not cancel the in-flight workflow until we receive finalized input.
   defp maybe_interrupt_response_only(state) do
     if state.cancel_on_interrupt do
       if state.response_active do
@@ -427,7 +412,7 @@ defmodule Synaptic.Voice.Realtime.Session do
       :telemetry.execute(
         [:synaptic, :voice, :realtime, :interrupt],
         %{},
-        %{session_id: state.session_id, run_id: state.run_id, scope: :response_only}
+        Map.put(telemetry_metadata(state), :scope, :response_only)
       )
 
       state
@@ -441,7 +426,6 @@ defmodule Synaptic.Voice.Realtime.Session do
 
   defp send_backchannel(state) do
     phrase = choose_backchannel_phrase(state.backchannel_phrases)
-
     now_ms = System.monotonic_time(:millisecond)
     mark = Map.get(state.telemetry_marks, :user_final_at_ms)
 
@@ -449,7 +433,7 @@ defmodule Synaptic.Voice.Realtime.Session do
       :telemetry.execute(
         [:synaptic, :voice, :realtime, :backchannel, :sent],
         %{user_final_to_backchannel_ms: max(now_ms - mark, 0)},
-        %{session_id: state.session_id, run_id: state.run_id}
+        telemetry_metadata(state)
       )
     end
 
@@ -489,13 +473,10 @@ defmodule Synaptic.Voice.Realtime.Session do
     :telemetry.execute(
       [:synaptic, :voice, :realtime, :workflow, :start],
       %{},
-      %{session_id: state.session_id, run_id: run_id}
+      telemetry_metadata(state)
     )
 
-    task =
-      Task.async(fn ->
-        run_workflow_turn(run_id, input_text, timeout_ms)
-      end)
+    task = Task.async(fn -> run_workflow_turn(run_id, input_text, timeout_ms) end)
 
     state
     |> Map.put(:current_task, %{task: task, input: input_text})
@@ -518,7 +499,7 @@ defmodule Synaptic.Voice.Realtime.Session do
       :telemetry.execute(
         [:synaptic, :voice, :realtime, :workflow, :stop],
         %{user_final_to_assistant_start_ms: max(now_ms - mark, 0)},
-        %{session_id: state.session_id, run_id: state.run_id}
+        telemetry_metadata(state)
       )
     end
 
@@ -550,7 +531,7 @@ defmodule Synaptic.Voice.Realtime.Session do
     |> Map.put(:response_active, true)
     |> emit(:assistant_response_started, %{source: :workflow})
     |> update_status(:speaking)
-    |> emit(:duplex_state_changed, %{status: :speaking, mode: :duplex})
+    |> emit(:duplex_state_changed, %{status: :speaking, mode: :realtime})
   end
 
   defp handle_workflow_result({:error, reason}, state) do
@@ -562,7 +543,7 @@ defmodule Synaptic.Voice.Realtime.Session do
     |> Map.put(:response_active, false)
     |> emit(:session_error, %{source: :workflow, reason: reason})
     |> update_status(:listening)
-    |> emit(:duplex_state_changed, %{status: :listening, mode: :duplex})
+    |> emit(:duplex_state_changed, %{status: :listening, mode: :realtime})
   end
 
   defp run_workflow_turn(run_id, input_text, timeout_ms) do
@@ -586,16 +567,14 @@ defmodule Synaptic.Voice.Realtime.Session do
     :exit, reason -> {:error, {:run_exit, reason}}
   end
 
-  defp fallback_answer(snapshot, input_text) do
-    github_summary = get_in(snapshot, [:context, :github_summary])
+  defp fallback_answer(snapshot, _input_text) do
+    Enum.find_value([:answer, :response, :reply], fn key ->
+      value = get_in(snapshot, [:context, key])
 
-    cond do
-      is_binary(github_summary) and String.trim(github_summary) != "" ->
-        "I checked GitHub for your request '#{input_text}'. #{github_summary}"
-
-      true ->
-        nil
-    end
+      if is_binary(value) and String.trim(value) != "" do
+        value
+      end
+    end)
   end
 
   defp await_workflow_snapshot(run_id, timeout_ms) do
@@ -657,7 +636,7 @@ defmodule Synaptic.Voice.Realtime.Session do
     :telemetry.execute(
       [:synaptic, :voice, :realtime, :workflow, :cancel],
       %{},
-      %{session_id: state.session_id, run_id: state.run_id, reason: :interrupted}
+      Map.put(telemetry_metadata(state), :reason, :interrupted)
     )
 
     state
@@ -681,17 +660,18 @@ defmodule Synaptic.Voice.Realtime.Session do
     PubSub.broadcast(
       Synaptic.PubSub,
       session_topic(state.session_id),
-      {:synaptic_voice_realtime_event, event}
+      {:synaptic_voice_event, event}
     )
 
     %{state | seq: state.seq + 1}
   end
 
   defp run_topic(run_id), do: "synaptic:run:" <> run_id
-  defp session_topic(session_id), do: "synaptic:voice:realtime:session:" <> session_id
+  defp session_topic(session_id), do: "synaptic:voice:session:" <> session_id
 
-  defp public_realtime(realtime) when is_map(realtime) do
-    Map.take(realtime, [:model, :voice, :session_id, :expires_at])
+  defp public_transport(realtime) when is_map(realtime) do
+    realtime
+    |> Map.take([:provider, :model, :voice, :session_id, :expires_at, :client_secret])
   end
 
   defp choose_backchannel_phrase([]), do: "One moment while I check that."
@@ -732,5 +712,16 @@ defmodule Synaptic.Voice.Realtime.Session do
 
   defp truncate_for_log(text, max) when is_binary(text) and is_integer(max) and max > 0 do
     if String.length(text) <= max, do: text, else: String.slice(text, 0, max) <> "..."
+  end
+
+  defp telemetry_metadata(state) do
+    %{
+      session_id: state.session_id,
+      run_id: state.run_id,
+      mode: :realtime,
+      stt_provider: nil,
+      tts_provider: nil,
+      realtime_provider: state.stack.realtime
+    }
   end
 end

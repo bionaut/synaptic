@@ -198,13 +198,20 @@ defmodule Synaptic.AgentRouterTest do
       )
 
     assert {:ok, by_instance} =
-             AgentRouter.call(first_call.instance.instance_id, %{action: :inspect}, caller_ctx: caller_ctx)
+             AgentRouter.call(first_call.instance.instance_id, %{action: :inspect},
+               caller_ctx: caller_ctx
+             )
 
     assert by_instance.snapshot.status == :waiting_for_human
 
     assert {:ok, by_query} =
              AgentRouter.call(
-               %{user_id: "u1", capability: "internet.search", alias: "last_search", require_active: true},
+               %{
+                 user_id: "u1",
+                 capability: "internet.search",
+                 alias: "last_search",
+                 require_active: true
+               },
                %{action: :inspect},
                caller_ctx: caller_ctx
              )
@@ -258,7 +265,10 @@ defmodule Synaptic.AgentRouterTest do
     assert status1.status in [:running, :completed]
 
     assert_eventually(fn ->
-      match?({:ok, %{status: :completed, result: {:ok, _}}}, AgentRouter.job_status(job_handle.job_id))
+      match?(
+        {:ok, %{status: :completed, result: {:ok, _}}},
+        AgentRouter.job_status(job_handle.job_id)
+      )
     end)
   end
 
@@ -279,8 +289,12 @@ defmodule Synaptic.AgentRouterTest do
       )
 
     assert [] = AgentDirectory.list_services(%{}, caller_ctx: caller_ctx)
-    assert {:error, :invisible} = AgentDirectory.lookup_service("internet.search", caller_ctx: caller_ctx)
-    assert {:error, :invisible} = AgentRouter.call("internet.search", %{query: "denied"}, caller_ctx: caller_ctx)
+
+    assert {:error, :invisible} =
+             AgentDirectory.lookup_service("internet.search", caller_ctx: caller_ctx)
+
+    assert {:error, :invisible} =
+             AgentRouter.call("internet.search", %{query: "denied"}, caller_ctx: caller_ctx)
   end
 
   test "cancel_job marks running router job as canceled" do
@@ -442,8 +456,11 @@ defmodule Synaptic.AgentRouterTest do
         }
       )
 
-    assert {:ok, _service} = AgentDirectory.lookup_service("internet.search", caller_ctx: caller_ctx)
-    assert {:error, :unauthorized} = AgentRouter.call("internet.search", %{query: "nope"}, caller_ctx: caller_ctx)
+    assert {:ok, _service} =
+             AgentDirectory.lookup_service("internet.search", caller_ctx: caller_ctx)
+
+    assert {:error, :unauthorized} =
+             AgentRouter.call("internet.search", %{query: "nope"}, caller_ctx: caller_ctx)
   end
 
   test "pid-backed instance returns unsupported_action for unknown action" do
@@ -464,7 +481,9 @@ defmodule Synaptic.AgentRouterTest do
     {:ok, started} = AgentRouter.call("echo.pid.unsupported", %{}, caller_ctx: caller_ctx)
 
     assert {:error, :unsupported_action} =
-             AgentRouter.call(started.instance.instance_id, %{action: :unknown}, caller_ctx: caller_ctx)
+             AgentRouter.call(started.instance.instance_id, %{action: :unknown},
+               caller_ctx: caller_ctx
+             )
   end
 
   defp assert_eventually(fun, attempts \\ 50)

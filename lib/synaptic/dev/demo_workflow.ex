@@ -294,13 +294,13 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
     end
 
     llm_router :decide_next,
-      [
-        {"an email and phone number are both available", :finish},
-        {"the email is missing but a phone number is available", :ask_email},
-        {"the phone number is missing but an email is available", :ask_phone},
-        {"both email and phone are missing or unclear", :ask_both}
-      ],
-      prompt: "Choose the best next step based on the extracted contact details." do
+               [
+                 {"an email and phone number are both available", :finish},
+                 {"the email is missing but a phone number is available", :ask_email},
+                 {"the phone number is missing but an email is available", :ask_phone},
+                 {"both email and phone are missing or unclear", :ask_both}
+               ],
+               prompt: "Choose the best next step based on the extracted contact details." do
       %{
         extracted_email: Map.get(context, :extracted_email),
         extracted_phone: Map.get(context, :extracted_phone),
@@ -458,7 +458,9 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
         caller_agent_id: "demo.coordinator"
       }
 
-      Logger.info("[agent_coordinator] prepared caller_ctx user_id=#{user_id} topic=#{inspect(topic)}")
+      Logger.info(
+        "[agent_coordinator] prepared caller_ctx user_id=#{user_id} topic=#{inspect(topic)}"
+      )
 
       {:ok,
        %{
@@ -653,7 +655,9 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
 
       register_demo_agent_services()
 
-      Logger.info("[agent_demo] starting coordinator agent topic=#{inspect(topic)} user_id=#{user_id}")
+      Logger.info(
+        "[agent_demo] starting coordinator agent topic=#{inspect(topic)} user_id=#{user_id}"
+      )
 
       result =
         Synaptic.agent_call(
@@ -670,7 +674,11 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
           coordinator_run_id = response.run_id
 
           Logger.info("[agent_demo] coordinator run_id=#{inspect(coordinator_run_id)}")
-          Logger.info("[agent_demo] final coordinator snapshot status=#{inspect(response.snapshot.status)}")
+
+          Logger.info(
+            "[agent_demo] final coordinator snapshot status=#{inspect(response.snapshot.status)}"
+          )
+
           Logger.info("[agent_demo] summary=#{inspect(summary)}")
 
           if summary do

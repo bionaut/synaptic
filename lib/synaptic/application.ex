@@ -18,10 +18,9 @@ defmodule Synaptic.Application do
       Synaptic.AgentDirectory,
       Synaptic.WorkloadManager,
       Synaptic.AgentRouter,
-      Synaptic.Voice.Registry,
-      Synaptic.Voice.SessionSupervisor,
-      Synaptic.Voice.Realtime.Registry,
-      Synaptic.Voice.Realtime.SessionSupervisor,
+      Synaptic.Voice.SessionRegistry,
+      Synaptic.Voice.HeadlessSessionSupervisor,
+      Synaptic.Voice.RealtimeSessionSupervisor,
       {Phoenix.PubSub, name: Synaptic.PubSub},
       {Finch, name: Synaptic.Finch}
     ]
