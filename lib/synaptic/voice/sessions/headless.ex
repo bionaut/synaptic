@@ -702,7 +702,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
   end
 
   defp log_flow(state, event, details) do
-    Logger.info(fn ->
+    Logger.debug(fn ->
       summary =
         details
         |> Map.merge(%{

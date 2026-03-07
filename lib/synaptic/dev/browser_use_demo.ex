@@ -36,7 +36,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
     step :scrape_videos do
       mcp_config = browser_use_mcp(context)
 
-      Logger.info(
+      Logger.debug(
         "[browser_use_demo] Scraping #{@youtube_url} via browser-use MCP endpoint=#{mcp_config[:base_url]}"
       )
 
@@ -87,7 +87,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
              model: "gpt-5-mini"
            ) do
         {:ok, result} ->
-          Logger.info("[browser_use_demo] Got result from agent")
+          Logger.debug("[browser_use_demo] Got result from agent")
           parse_agent_result(result)
 
         {:error, reason} ->
@@ -99,7 +99,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
     step :format_output do
       videos = Map.get(context, :videos, [])
       formatted = format_videos(videos)
-      Logger.info("[browser_use_demo] Done.\n\n#{formatted}")
+      Logger.debug("[browser_use_demo] Done.\n\n#{formatted}")
       {:ok, %{formatted_output: formatted}}
     end
 
@@ -164,7 +164,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
 
         :error ->
           # No JSON found — store the raw text as the result
-          Logger.warning("[browser_use_demo] No JSON in agent result, storing raw text")
+          Logger.debug("[browser_use_demo] No JSON in agent result, storing raw text")
           {:ok, %{raw_result: result, videos: []}}
       end
     end

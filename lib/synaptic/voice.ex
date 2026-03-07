@@ -16,6 +16,7 @@ defmodule Synaptic.Voice do
     Router.attach_run(run_id, opts)
   end
 
+  @spec push_audio(binary(), any(), any()) :: any()
   def push_audio(session_id, audio_chunk, opts \\ []),
     do: Router.push_audio(session_id, audio_chunk, opts)
 

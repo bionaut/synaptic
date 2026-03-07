@@ -342,13 +342,13 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
       now_ms = System.monotonic_time(:millisecond)
 
       if duplicate_final_input?(state.last_final_input, item_id, trimmed, now_ms) do
-        Logger.info(
+        Logger.debug(
           "[voice.realtime] input_final_duplicate_ignored session=#{state.session_id} run=#{state.run_id} item_id=#{inspect(item_id)}"
         )
 
         state
       else
-        Logger.info(
+        Logger.debug(
           "[voice.realtime] input_final session=#{state.session_id} run=#{state.run_id} text=#{inspect(trimmed)}"
         )
 
@@ -466,7 +466,7 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
     timeout_ms = state.workflow_timeout_ms
     run_id = state.run_id
 
-    Logger.info(
+    Logger.debug(
       "[voice.realtime] workflow_start session=#{state.session_id} run=#{run_id} query=#{inspect(input_text)}"
     )
 
@@ -484,11 +484,11 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
   end
 
   defp handle_workflow_result({:ok, answer}, state) do
-    Logger.info(
+    Logger.debug(
       "[voice.realtime] workflow_ok session=#{state.session_id} run=#{state.run_id} answer_chars=#{String.length(answer || "")}"
     )
 
-    Logger.info(
+    Logger.debug(
       "[voice.realtime] workflow_answer session=#{state.session_id} run=#{state.run_id} preview=#{inspect(truncate_for_log(answer, 240))}"
     )
 
@@ -607,7 +607,7 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
 
         {:error, :busy_timeout} ->
           if rem(attempts + 1, 10) == 0 do
-            Logger.info(
+            Logger.debug(
               "[voice.realtime] workflow_waiting session_run=#{run_id} reason=runner_busy attempts=#{attempts + 1}"
             )
           end
@@ -694,7 +694,7 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
   end
 
   defp log_assistant_chunk(state, %{text: text}) when is_binary(text) do
-    Logger.info(
+    Logger.debug(
       "[voice.realtime] assistant_chunk session=#{state.session_id} run=#{state.run_id} chars=#{String.length(text)} text=#{inspect(truncate_for_log(text, 240))}"
     )
   end

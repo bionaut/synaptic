@@ -4,6 +4,26 @@ This guide documents Synaptic's voice subsystem and **principles for building re
 
 ---
 
+## Mode-specific setup playbooks
+
+For implementation-grade, step-by-step setup instructions by mode:
+
+- Duplex: [`docs/voice_modes/duplex_setup.md`](docs/voice_modes/duplex_setup.md)
+- Turn-based: [`docs/voice_modes/turn_based_setup.md`](docs/voice_modes/turn_based_setup.md)
+- Realtime: [`docs/voice_modes/realtime_setup.md`](docs/voice_modes/realtime_setup.md)
+
+---
+
+## Frontend setup playbooks
+
+For frontend-only integration details (event wiring, UI states, recorder/playback controls):
+
+- Duplex frontend: [`docs/voice_frontend/duplex_frontend_setup.md`](docs/voice_frontend/duplex_frontend_setup.md)
+- Turn-based frontend: [`docs/voice_frontend/turn_based_frontend_setup.md`](docs/voice_frontend/turn_based_frontend_setup.md)
+- Realtime frontend: [`docs/voice_frontend/realtime_frontend_setup.md`](docs/voice_frontend/realtime_frontend_setup.md)
+
+---
+
 ## What the framework provides
 
 `Synaptic.Voice` is the only public voice API.

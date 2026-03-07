@@ -662,7 +662,7 @@ defmodule Synaptic.Voice.Sessions.Realtime.Gemini do
 
         {:error, :busy_timeout} ->
           if rem(attempts + 1, 10) == 0 do
-            Logger.info(
+            Logger.debug(
               "[voice.realtime] workflow_waiting session_run=#{run_id} reason=runner_busy attempts=#{attempts + 1}"
             )
           end

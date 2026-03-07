@@ -64,14 +64,19 @@ defmodule Synaptic.Voice.Providers.OpenAI.TTSAdapter do
     audio_format =
       Keyword.get(opts, :audio_format, OpenAI.config(opts)[:tts_audio_format] || "pcm16")
 
+    base_body = %{
+      model:
+        Keyword.get(opts, :tts_model, OpenAI.config(opts)[:tts_model] || "gpt-4o-mini-tts"),
+      input: text_segment,
+      voice: Keyword.get(opts, :voice, OpenAI.config(opts)[:voice] || "alloy"),
+      format: audio_format
+    }
+
     body =
-      Jason.encode!(%{
-        model:
-          Keyword.get(opts, :tts_model, OpenAI.config(opts)[:tts_model] || "gpt-4o-mini-tts"),
-        input: text_segment,
-        voice: Keyword.get(opts, :voice, OpenAI.config(opts)[:voice] || "alloy"),
-        format: audio_format
-      })
+      base_body
+      |> maybe_put_speed(opts)
+      |> maybe_put_instructions(opts)
+      |> Jason.encode!()
 
     headers = [
       {"content-type", "application/json"},
@@ -195,6 +200,26 @@ defmodule Synaptic.Voice.Providers.OpenAI.TTSAdapter do
   defp content_type("pcm16"), do: "audio/L16"
   defp content_type("opus"), do: "audio/ogg"
   defp content_type(_), do: "application/octet-stream"
+
+  defp maybe_put_speed(body, opts) do
+    case Keyword.get(opts, :speed, OpenAI.config(opts)[:tts_speed]) do
+      speed when is_number(speed) and speed >= 0.25 and speed <= 4.0 ->
+        Map.put(body, :speed, speed)
+
+      _ ->
+        body
+    end
+  end
+
+  defp maybe_put_instructions(body, opts) do
+    case Keyword.get(opts, :instructions, OpenAI.config(opts)[:tts_instructions]) do
+      instructions when is_binary(instructions) and instructions != "" ->
+        Map.put(body, :instructions, instructions)
+
+      _ ->
+        body
+    end
+  end
 
   defp endpoint(opts),
     do: opts[:endpoint] || OpenAI.config(opts)[:tts_endpoint] || @default_endpoint
