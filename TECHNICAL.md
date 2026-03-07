@@ -217,6 +217,10 @@ For implementation and integration details, see [`VOICE.md`](VOICE.md).
 - STT/TTS integrations are pluggable via behaviours:
   - `Synaptic.Voice.STTAdapter`
   - `Synaptic.Voice.TTSAdapter`
+- Headless voice now resolves provider capability metadata and picks an internal
+  TTS strategy (`:segmented_batch | :single_shot | :streaming`) with a small
+  pure-function decision module. Current built-in providers default to
+  `:single_shot` for turn-level TTS consistency.
 - Provider adapters are available under `Synaptic.Voice.Providers.*`.
 - Realtime engines are provider-specific:
   `Synaptic.Voice.Sessions.Realtime.OpenAI` and

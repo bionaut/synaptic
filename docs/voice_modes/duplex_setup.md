@@ -16,6 +16,11 @@ In duplex mode:
 - your client owns: microphone, VAD, playback UX
 - Synaptic owns: session lifecycle, STT/TTS adapters, workflow resume, normalized events
 
+Headless output note:
+- built-in providers now default to one TTS generation per assistant turn for more consistent tone
+- assistant text still streams during workflow execution, but assistant audio may not begin until the workflow emits `:stream_done`
+- segmented per-sentence TTS remains an internal fallback for adapters without capability metadata
+
 Key server module path:
 - `Synaptic.Voice.Sessions.Headless` (`mode: :duplex`)
 
@@ -110,6 +115,10 @@ From `{:synaptic_voice_event, envelope}`:
 For playback drain gating:
 - send a client ack back (`duplex_playback_drained`) after audio is actually drained locally
 
+Important timing note:
+- do not assume `:assistant_audio_chunk` will begin immediately after the first `:assistant_text_chunk`
+- for built-in providers, audio commonly starts after `:assistant_text_done` because TTS now defaults to full-turn synthesis
+
 ---
 
 ## 7. Error handling and recovery defaults
@@ -133,6 +142,7 @@ Before shipping duplex:
 - confirm assistant playback drain ack is wired and received
 - confirm end-turn flush waits for final recorder chunk
 - confirm barge-in uses `cancel_output` path
+- confirm UI tolerates delayed first audio while assistant text is already streaming
 - confirm client suppresses stale audio after interrupt
 - confirm next-turn TTS still plays after cancel
 - confirm no atom creation from client log/event names

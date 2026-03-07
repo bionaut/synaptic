@@ -5,8 +5,9 @@ defmodule Synaptic.Voice.Sessions.Headless do
   require Logger
 
   alias Phoenix.PubSub
-  alias Synaptic.Voice.{Event, SessionRegistry, TextSegmenter}
-  alias Synaptic.Voice.Sessions.Headless.Lifecycle
+  alias Synaptic.Voice.{Event, SessionRegistry}
+  alias Synaptic.Voice.Headless.{ProviderCapabilities, Strategy}
+  alias Synaptic.Voice.Sessions.Headless.{Lifecycle, Output}
 
   @type mode :: :duplex | :turn_based
 
@@ -47,6 +48,10 @@ defmodule Synaptic.Voice.Sessions.Headless do
     keep_alive = Keyword.get(opts, :keep_alive, false)
     mode = Keyword.get(opts, :mode, :duplex)
     provider_modules = Keyword.fetch!(opts, :provider_modules)
+
+    provider_capabilities =
+      Keyword.get(opts, :provider_capabilities, ProviderCapabilities.default())
+
     stack = Keyword.fetch!(opts, :stack)
     stack_opts = Keyword.get(opts, :stack_opts, %{})
     resume_mapper = Keyword.get(opts, :resume_mapper, &default_resume_mapper/2)
@@ -55,6 +60,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
     tts_adapter = provider_modules.tts
     stt_opts = provider_opts(stack_opts, :stt)
     tts_opts = provider_opts(stack_opts, :tts)
+    tts_strategy = Strategy.select_tts(provider_capabilities)
 
     case stt_adapter.start_link(self(), stt_opts) do
       {:ok, stt_pid} ->
@@ -70,6 +76,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
               mode: mode,
               stack: stack,
               provider_modules: provider_modules,
+              provider_capabilities: provider_capabilities,
               transport: nil,
               status: :listening,
               seq: 0,
@@ -83,6 +90,8 @@ defmodule Synaptic.Voice.Sessions.Headless do
               stt_pid: stt_pid,
               tts_adapter: tts_adapter,
               tts_pid: tts_pid,
+              tts_strategy: tts_strategy,
+              output_state: Output.new(tts_strategy),
               tts_buffer: "",
               latest_partial: nil,
               latest_final: nil,
@@ -103,7 +112,12 @@ defmodule Synaptic.Voice.Sessions.Headless do
               telemetry_metadata
             )
 
-            log_flow(state, "init_session", %{mode: mode, stack: stack, keep_alive: keep_alive})
+            log_flow(state, "init_session", %{
+              mode: mode,
+              stack: stack,
+              keep_alive: keep_alive,
+              tts_strategy: tts_strategy
+            })
 
             {:ok,
              state
@@ -179,7 +193,13 @@ defmodule Synaptic.Voice.Sessions.Headless do
     log_flow(state, "cancel_output", %{status: state.status})
     :ok = state.tts_adapter.cancel_output(state.tts_pid)
 
-    state = apply_lifecycle_event(state, :cancel_output)
+    state =
+      state
+      |> Map.update!(:output_state, &Output.cancel/1)
+      |> then(fn new_state ->
+        %{new_state | tts_buffer: Output.tts_buffer(new_state.output_state)}
+      end)
+      |> apply_lifecycle_event(:cancel_output)
 
     {:reply, :ok, state}
   end
@@ -206,38 +226,47 @@ defmodule Synaptic.Voice.Sessions.Headless do
       when is_binary(chunk) do
     log_flow(state, "workflow_stream_chunk", %{chars: String.length(chunk)})
 
-    state =
-      state
-      |> apply_lifecycle_event(:workflow_stream_chunk_started)
-      |> mark_llm_latency()
-      |> emit(:assistant_text_chunk, %{text: chunk})
+    if Output.suppressed?(state.output_state) do
+      {:noreply, state}
+    else
+      state =
+        state
+        |> apply_lifecycle_event(:workflow_stream_chunk_started)
+        |> mark_llm_latency()
+        |> emit(:assistant_text_chunk, %{text: chunk})
 
-    {segments, tts_buffer} = TextSegmenter.consume(state.tts_buffer, chunk)
+      {actions, output_state} = Output.consume_chunk(state.output_state, chunk)
+      state = %{state | output_state: output_state, tts_buffer: Output.tts_buffer(output_state)}
+      :ok = dispatch_output_actions(state, actions)
 
-    Enum.each(segments, fn segment ->
-      :ok = state.tts_adapter.synthesize_segment(state.tts_pid, segment, [])
-    end)
-
-    {:noreply, %{state | tts_buffer: tts_buffer}}
+      {:noreply, state}
+    end
   end
 
   def handle_info({:synaptic_event, %{event: :stream_done}}, state) do
     log_flow(state, "workflow_stream_done", %{tts_buffer_chars: String.length(state.tts_buffer)})
 
-    state =
-      state
-      |> apply_lifecycle_event(:workflow_stream_done)
-      |> emit(:assistant_text_done, %{})
+    if Output.suppressed?(state.output_state) do
+      output_state = Output.reset_turn(state.output_state)
 
-    state.tts_buffer
-    |> TextSegmenter.flush()
-    |> Enum.each(fn segment ->
-      :ok = state.tts_adapter.synthesize_segment(state.tts_pid, segment, [])
-    end)
+      {:noreply,
+       %{state | output_state: output_state, tts_buffer: Output.tts_buffer(output_state)}}
+    else
+      state =
+        state
+        |> apply_lifecycle_event(:workflow_stream_done)
+        |> emit(:assistant_text_done, %{})
 
-    :ok = state.tts_adapter.flush(state.tts_pid, [])
+      {actions, should_flush?, output_state} = Output.finalize(state.output_state)
+      state = %{state | output_state: output_state, tts_buffer: Output.tts_buffer(output_state)}
+      :ok = dispatch_output_actions(state, actions)
 
-    {:noreply, %{state | tts_buffer: ""}}
+      if should_flush? do
+        :ok = state.tts_adapter.flush(state.tts_pid, [])
+      end
+
+      {:noreply, state}
+    end
   end
 
   def handle_info({:synaptic_event, %{event: :waiting_for_human}}, state) do
@@ -280,6 +309,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
 
   def handle_info({:synaptic_voice, :stt_final, text, meta}, state) do
     trimmed = String.trim(text || "")
+
     log_flow(state, "stt_final_received", %{
       chars: String.length(trimmed),
       meta: summarize_map(meta)
@@ -436,10 +466,12 @@ defmodule Synaptic.Voice.Sessions.Headless do
       seq: state.seq,
       stack: state.stack,
       provider_modules: Map.take(state.provider_modules, [:stt, :tts, :realtime]),
+      provider_capabilities: state.provider_capabilities,
       transport: state.transport,
       latency: state.latency,
       engine_state: %{
         turn_phase: turn_phase(state),
+        tts_strategy: state.tts_strategy,
         latest_partial: state.latest_partial,
         latest_final: state.latest_final,
         end_turn_requested: state.end_turn_requested,
@@ -462,6 +494,10 @@ defmodule Synaptic.Voice.Sessions.Headless do
     )
 
     state
+    |> Map.update!(:output_state, &Output.cancel/1)
+    |> then(fn new_state ->
+      %{new_state | tts_buffer: Output.tts_buffer(new_state.output_state)}
+    end)
     |> Map.put(:status, :duplex_overlap)
     |> emit(:duplex_interruption, %{reason: :user_input})
     |> Map.put(:status, :listening)
@@ -477,12 +513,14 @@ defmodule Synaptic.Voice.Sessions.Headless do
     case Synaptic.resume(state.run_id, payload) do
       :ok ->
         log_flow(state, "resume_ok", %{})
+
         state
         |> clear_consumed_transcript()
         |> apply_lifecycle_event(:resume_ok)
 
       {:error, reason} ->
         log_flow(state, "resume_error", %{reason: inspect(reason)})
+
         state
         |> apply_lifecycle_event({:resume_error, normalize_error_reason(reason)})
     end
@@ -553,7 +591,11 @@ defmodule Synaptic.Voice.Sessions.Headless do
         %{type: :empty_transcript, meta: summarize_map(meta)}
 
       {:transcription_failed, detail, meta} ->
-        %{type: :transcription_failed, detail: normalize_error_reason(detail), meta: summarize_map(meta)}
+        %{
+          type: :transcription_failed,
+          detail: normalize_error_reason(detail),
+          meta: summarize_map(meta)
+        }
 
       {:upstream_error, status, _body} ->
         %{type: :upstream_error, status: status}
@@ -618,7 +660,25 @@ defmodule Synaptic.Voice.Sessions.Headless do
   end
 
   defp reset_turn_state(state) do
-    %{state | latest_partial: nil, latest_final: nil, turn_started_at: now_ms()}
+    output_state = Output.reset_turn(state.output_state)
+
+    %{
+      state
+      | latest_partial: nil,
+        latest_final: nil,
+        turn_started_at: now_ms(),
+        output_state: output_state,
+        tts_buffer: Output.tts_buffer(output_state)
+    }
+  end
+
+  defp dispatch_output_actions(state, actions) do
+    Enum.each(actions, fn
+      {:synthesize, text} ->
+        :ok = state.tts_adapter.synthesize_segment(state.tts_pid, text, [])
+    end)
+
+    :ok
   end
 
   defp apply_lifecycle_event(state, event) do

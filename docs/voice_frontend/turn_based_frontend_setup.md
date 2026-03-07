@@ -41,6 +41,11 @@ Server -> frontend:
 
 Even though the event name says `duplex_state_changed`, use it as the authoritative mode-agnostic status signal.
 
+Timing note:
+- built-in providers now default to full-turn TTS for tone consistency
+- the UI may receive `assistant_text_chunk` updates before any `assistant_audio_chunk`
+- do not assume audio begins at the first text chunk
+
 ---
 
 ## 3. Recorder flow
@@ -67,6 +72,8 @@ Turn-based mode still needs assistant playback handling:
 - decode assistant chunks
 - schedule playback
 - reset speech state when done
+
+Because audio may start later than transcript streaming, keep the UI in a processing/thinking state until playback actually begins or completes.
 
 If user starts a new turn while assistant is speaking:
 - optionally send cancel-output path before ending user turn (server bridge can enforce this)
@@ -120,6 +127,7 @@ This prevents stuck “recording” UI after route changes.
 3. Stop with zero chunks does not call end-turn
 4. Button state always returns to idle after success/error
 5. Disconnect during capture performs clean teardown
+6. Text can stream before audio without breaking loading/playback UI
 
 ---
 

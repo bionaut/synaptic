@@ -35,6 +35,7 @@ defmodule Synaptic.Voice.Router do
       |> Keyword.put(:stack, resolved.stack)
       |> Keyword.put(:stack_opts, resolved.stack_opts)
       |> Keyword.put(:provider_modules, resolved.provider_modules)
+      |> Keyword.put(:provider_capabilities, resolved.provider_capabilities)
       |> Keyword.put(:registry_metadata, registry_metadata(run_id, resolved))
 
     case DynamicSupervisor.start_child(resolved.supervisor, {resolved.engine, child_opts}) do
@@ -97,7 +98,8 @@ defmodule Synaptic.Voice.Router do
     provider = Keyword.get(opts, :provider, config[:default_provider] || :openai)
 
     with {:ok, stack_opts} <- resolve_stack(mode, provider, opts),
-         {:ok, provider_modules, stack_ids} <- resolve_provider_modules(mode, stack_opts, opts) do
+         {:ok, provider_modules, stack_ids, provider_capabilities} <-
+           resolve_provider_modules(mode, stack_opts, opts) do
       engine = engine_for(mode, provider)
 
       :telemetry.execute(
@@ -113,6 +115,7 @@ defmodule Synaptic.Voice.Router do
          stack: stack_ids,
          stack_opts: stack_opts,
          provider_modules: provider_modules,
+         provider_capabilities: provider_capabilities,
          engine: engine,
          supervisor: supervisor_for(mode)
        }}
@@ -208,7 +211,8 @@ defmodule Synaptic.Voice.Router do
          _call_opts
        ) do
     with {:ok, realtime} <- ProviderRegistry.resolve(:realtime, provider) do
-      {:ok, %{stt: nil, tts: nil, realtime: realtime}, stack_to_ids(:realtime, stack_opts)}
+      {:ok, %{stt: nil, tts: nil, realtime: realtime}, stack_to_ids(:realtime, stack_opts),
+       realtime_capabilities(provider)}
     end
   end
 
@@ -221,7 +225,8 @@ defmodule Synaptic.Voice.Router do
         realtime: nil
       }
 
-      {:ok, %{stt: stt, tts: tts, realtime: nil}, stack_ids}
+      {:ok, %{stt: stt, tts: tts, realtime: nil}, stack_ids,
+       headless_capabilities(stt_provider, tts_provider, opts[:stt_adapter], opts[:tts_adapter])}
     end
   end
 
@@ -243,8 +248,41 @@ defmodule Synaptic.Voice.Router do
       mode: resolved.mode,
       run_id: run_id,
       stack: resolved.stack,
-      provider_modules: Map.take(resolved.provider_modules, [:stt, :tts, :realtime])
+      provider_modules: Map.take(resolved.provider_modules, [:stt, :tts, :realtime]),
+      provider_capabilities: resolved.provider_capabilities
     }
+  end
+
+  defp headless_capabilities(_stt_provider, _tts_provider, stt_override, tts_override)
+       when not is_nil(stt_override) or not is_nil(tts_override),
+       do: Synaptic.Voice.Headless.ProviderCapabilities.default()
+
+  defp headless_capabilities(stt_provider, tts_provider, _stt_override, _tts_override) do
+    stt_mode =
+      case ProviderRegistry.capabilities(stt_provider) do
+        {:ok, capabilities} -> capabilities.stt_mode
+        _ -> :batch
+      end
+
+    case ProviderRegistry.capabilities(tts_provider) do
+      {:ok, capabilities} ->
+        %Synaptic.Voice.Headless.ProviderCapabilities{capabilities | stt_mode: stt_mode}
+
+      _ ->
+        %Synaptic.Voice.Headless.ProviderCapabilities{
+          stt_mode: stt_mode,
+          tts_mode: :segmented_batch,
+          supports_barge_in_cancel: false,
+          supports_turn_tts_consistency: false
+        }
+    end
+  end
+
+  defp realtime_capabilities(provider) do
+    case ProviderRegistry.capabilities(provider) do
+      {:ok, capabilities} -> capabilities
+      _ -> Synaptic.Voice.Headless.ProviderCapabilities.default()
+    end
   end
 
   defp telemetry_metadata(:realtime, provider, %{realtime: realtime_provider}) do

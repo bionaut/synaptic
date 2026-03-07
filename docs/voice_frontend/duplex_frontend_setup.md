@@ -28,6 +28,11 @@ Backend responsibilities remain:
 - STT/TTS orchestration
 - workflow resume and status events
 
+Output timing note:
+- built-in providers now default to full-turn TTS for tone consistency
+- your UI may receive multiple `assistant_text_chunk` events before the first `assistant_audio_chunk`
+- treat text and audio as related but independently timed streams
+
 ---
 
 ## 2. Required hook/client state
@@ -72,6 +77,9 @@ Critical status semantics:
 - `speaking`: assistant output in progress
 - `awaiting_playback_drain`: backend waiting for client playback drain ack
 - `listening`: safe to capture and forward next turn
+
+Important:
+- `speaking` can begin before any assistant audio arrives, because the backend may still be accumulating the full assistant turn for single-shot TTS
 
 ---
 
@@ -127,6 +135,7 @@ Recommended controls:
 - optional event log during development
 
 Do not infer status from local playback only; always sync from backend status events.
+Do not infer TTS failure or stalled playback just because text has started and audio has not yet arrived.
 
 ---
 

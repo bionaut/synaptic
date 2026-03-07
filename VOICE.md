@@ -176,7 +176,7 @@ When you own the transport (e.g. your own WebSocket) and want Synaptic to run ST
 - **Start or attach**: `Synaptic.Voice.start_session(workflow_module, input, opts)` starts a run and session; `attach_run(run_id, opts)` attaches a session to an existing run. Both return `{:ok, %{session_id, run_id, mode, stack, transport}}`.
 - **Provider bundle**: pass `provider: :openai | :gemini | :eleven_labs`. Router derives pure stacks internally; public `stack` is rejected unless `_allow_custom_stack: true` (internal/tests).
 - **Input**: Stream audio with `push_audio(session_id, chunk, opts)` and/or send text with `push_text(session_id, text, opts)`. When the user turn is complete, call `end_turn(session_id, opts)` so STT finalizes (if applicable) and the run resumes with the transcript.
-- **Output**: Subscribe with `Synaptic.Voice.subscribe_session(session_id)`; events arrive on topic `"synaptic:voice:session:" <> session_id` as `{:synaptic_voice_event, envelope}`. Use `:assistant_text_chunk`, `:assistant_audio_chunk`, etc., to drive your TTS or playback and UI.
+- **Output**: Subscribe with `Synaptic.Voice.subscribe_session(session_id)`; events arrive on topic `"synaptic:voice:session:" <> session_id` as `{:synaptic_voice_event, envelope}`. Use `:assistant_text_chunk`, `:assistant_audio_chunk`, etc., to drive your playback and UI. Built-in headless providers now default to one TTS generation per assistant turn for more consistent tone; segmented TTS remains the fallback for adapters without capability metadata.
 - **Interruption**: In duplex mode, call `cancel_output(session_id)` when the user interrupts; the framework emits `:duplex_interruption` and transitions back to listening.
 - **Resume mapping**: By default, the transcript is sent as `%{human_input_text: transcript}` or `%{answer: transcript}` depending on the step’s `resume_schema`. Override with `resume_mapper: fn transcript, state -> payload end` in session options.
 - **Unsupported operations**: functions that do not make sense for provider+mode return `{:error, :unsupported_for_mode}`.
@@ -187,6 +187,7 @@ When you own the transport (e.g. your own WebSocket) and want Synaptic to run ST
 ## Headless: modules and event envelope
 
 - **Modules**: `Synaptic.Voice` (API), `Synaptic.Voice.Router`, `Synaptic.Voice.SessionRegistry`, `Synaptic.Voice.HeadlessSessionSupervisor`, `Synaptic.Voice.RealtimeSessionSupervisor`, `Synaptic.Voice.Event`, `Synaptic.Voice.TextSegmenter`; engines: `Synaptic.Voice.Sessions.Headless`, `Synaptic.Voice.Sessions.Realtime.OpenAI`, `Synaptic.Voice.Sessions.Realtime.Gemini`; providers: `Synaptic.Voice.Providers.OpenAI.*`, `Synaptic.Voice.Providers.Gemini.*`, `Synaptic.Voice.Providers.ElevenLabs.*`.
+- **Headless output strategies**: headless sessions select an internal TTS strategy from provider capability metadata. Current strategies are `:segmented_batch`, `:single_shot`, and reserved `:streaming`.
 - **Envelope**: guaranteed fields `:v`, `:session_id`, `:run_id`, `:seq`, `:ts_ms`, `:event`, `:data`.
 - **Event names**: `:turn_started`, `:input_partial_text`, `:input_final_text`, `:assistant_text_chunk`, `:assistant_text_done`, `:assistant_audio_chunk`, `:assistant_audio_done`, `:duplex_interruption`, `:duplex_state_changed`, `:session_error`, `:session_stopped`.
 
@@ -220,7 +221,7 @@ Defaults are:
 
 - No built-in UI or client transport; your app provides both.
 - Headless OpenAI STT batches audio and transcribes on `end_turn`; partials can be simulated via `push_audio(..., partial_text: ...)`.
-- TTS emits segments; playback is your responsibility.
+- TTS playback is your responsibility. Depending on provider capabilities, headless voice may synthesize per segment or once per assistant turn.
 - Realtime behavior is provider-specific: OpenAI uses client-direct WebRTC + sideband; Gemini uses server-relay Live WebSocket.
 
 ---

@@ -16,6 +16,11 @@ In turn-based mode:
 - server owns STT/TTS orchestration and workflow state
 - turn completion is explicit via `end_turn`
 
+Headless output note:
+- built-in providers now default to one TTS generation per assistant turn for more consistent tone
+- assistant text can stream before audio starts; audio may begin only after the assistant turn is fully generated
+- segmented per-sentence TTS remains the fallback path for adapters without capability metadata
+
 Session engine:
 - `Synaptic.Voice.Sessions.Headless` (`mode: :turn_based`)
 
@@ -99,6 +104,8 @@ From voice session PubSub:
 
 Even in turn-based mode, build status-driven UI and do not infer state from local assumptions only.
 
+In particular, do not assume the first `:assistant_audio_chunk` arrives immediately after the first `:assistant_text_chunk`.
+
 ---
 
 ## 7. Error handling defaults
@@ -130,6 +137,7 @@ Run these scenarios:
 3. text turn followed by voice turn in same session
 4. stop session and reconnect cleanly
 5. simulate STT failure and confirm next turn still works
+6. assistant text streams first and audio starts only after turn completion
 
 ---
 
