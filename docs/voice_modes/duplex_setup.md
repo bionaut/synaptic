@@ -31,6 +31,7 @@ Key lifecycle notes:
 Server:
 - `OPENAI_API_KEY` for OpenAI duplex
 - `GEMINI_API_KEY` for Gemini duplex
+- `ELEVENLABS_API_KEY` for ElevenLabs duplex
 - `Synaptic.Voice` config set (provider defaults optional, per-session overrides supported)
 
 Client:
@@ -47,7 +48,7 @@ Start a session from your server boundary (controller/live view/channel):
 ```elixir
 {:ok, %{session_id: session_id, run_id: run_id}} =
   Synaptic.Voice.start_session(MyWorkflow, %{},
-    provider: :openai,   # or :gemini
+    provider: :openai,   # or :gemini / :eleven_labs
     mode: :duplex,
     keep_alive: true
   )

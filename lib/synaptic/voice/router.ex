@@ -6,7 +6,7 @@ defmodule Synaptic.Voice.Router do
   alias Synaptic.Voice.Sessions.{Headless, Realtime}
 
   @type mode :: :turn_based | :duplex | :realtime
-  @type provider :: :openai | :gemini
+  @type provider :: :openai | :gemini | :eleven_labs
 
   def start_session(workflow_module, input, opts) when is_map(input) do
     with {:ok, resolved} <- resolve_session_opts(opts),

@@ -1,7 +1,7 @@
 defmodule Synaptic.Voice.ProviderRegistry do
   @moduledoc false
 
-  alias Synaptic.Voice.Providers.{Gemini, OpenAI}
+  alias Synaptic.Voice.Providers.{ElevenLabs, Gemini, OpenAI}
 
   @providers %{
     openai: %{
@@ -13,6 +13,10 @@ defmodule Synaptic.Voice.ProviderRegistry do
       stt: Gemini.STTAdapter,
       tts: Gemini.TTSAdapter,
       realtime: Gemini.Live.SessionBootstrap
+    },
+    eleven_labs: %{
+      stt: ElevenLabs.STTAdapter,
+      tts: ElevenLabs.TTSAdapter
     }
   }
 

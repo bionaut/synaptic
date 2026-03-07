@@ -36,6 +36,12 @@ config :synaptic, Synaptic.Voice.Providers.Gemini,
   voice: "Kore",
   live_voice: "Kore"
 
+config :synaptic, Synaptic.Voice.Providers.ElevenLabs,
+  finch: Synaptic.Finch,
+  tts_model_id: "eleven_multilingual_v2",
+  stt_model_id: "scribe_v2",
+  tts_output_format: "pcm_24000"
+
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
   metadata: []

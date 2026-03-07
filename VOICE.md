@@ -33,7 +33,9 @@ For frontend-only integration details (event wiring, UI states, recorder/playbac
   - OpenAI: client-direct WebRTC + server sideband orchestration
   - Gemini: server-relay WebSocket (client talks to your app, app talks to Gemini Live)
 
-Provider selection is per session with `provider: :openai | :gemini`. Public mixed stacks are rejected.
+Provider selection is per session with `provider: :openai | :gemini | :eleven_labs`
+for headless voice and `provider: :openai | :gemini` for realtime. Public mixed
+stacks are rejected.
 
 Choose `:realtime` when you want low-latency conversational transport. Choose `:turn_based` or `:duplex` when you want explicit turn control and direct STT/TTS orchestration.
 
@@ -71,6 +73,11 @@ config :synaptic, Synaptic.Voice.Providers.Gemini,
   live_model: "gemini-2.5-flash-native-audio-preview",
   voice: "Kore",
   live_voice: "Kore"
+
+config :synaptic, Synaptic.Voice.Providers.ElevenLabs,
+  tts_model_id: "eleven_multilingual_v2",
+  stt_model_id: "scribe_v2",
+  tts_output_format: "pcm_24000"
 ```
 
 **Runtime / secrets** (e.g. `config/runtime.exs`):
@@ -83,6 +90,10 @@ end
 
 if gemini_api_key = System.get_env("GEMINI_API_KEY") do
   config :synaptic, Synaptic.Voice.Providers.Gemini, api_key: gemini_api_key
+end
+
+if elevenlabs_api_key = System.get_env("ELEVENLABS_API_KEY") do
+  config :synaptic, Synaptic.Voice.Providers.ElevenLabs, api_key: elevenlabs_api_key
 end
 ```
 
@@ -163,7 +174,7 @@ Use these to drive UI (status, transcripts) and to relay `:provider_outbound` to
 When you own the transport (e.g. your own WebSocket) and want Synaptic to run STT/TTS and workflows:
 
 - **Start or attach**: `Synaptic.Voice.start_session(workflow_module, input, opts)` starts a run and session; `attach_run(run_id, opts)` attaches a session to an existing run. Both return `{:ok, %{session_id, run_id, mode, stack, transport}}`.
-- **Provider bundle**: pass `provider: :openai | :gemini`. Router derives pure stacks internally; public `stack` is rejected unless `_allow_custom_stack: true` (internal/tests).
+- **Provider bundle**: pass `provider: :openai | :gemini | :eleven_labs`. Router derives pure stacks internally; public `stack` is rejected unless `_allow_custom_stack: true` (internal/tests).
 - **Input**: Stream audio with `push_audio(session_id, chunk, opts)` and/or send text with `push_text(session_id, text, opts)`. When the user turn is complete, call `end_turn(session_id, opts)` so STT finalizes (if applicable) and the run resumes with the transcript.
 - **Output**: Subscribe with `Synaptic.Voice.subscribe_session(session_id)`; events arrive on topic `"synaptic:voice:session:" <> session_id` as `{:synaptic_voice_event, envelope}`. Use `:assistant_text_chunk`, `:assistant_audio_chunk`, etc., to drive your TTS or playback and UI.
 - **Interruption**: In duplex mode, call `cancel_output(session_id)` when the user interrupts; the framework emits `:duplex_interruption` and transitions back to listening.
@@ -175,7 +186,7 @@ When you own the transport (e.g. your own WebSocket) and want Synaptic to run ST
 
 ## Headless: modules and event envelope
 
-- **Modules**: `Synaptic.Voice` (API), `Synaptic.Voice.Router`, `Synaptic.Voice.SessionRegistry`, `Synaptic.Voice.HeadlessSessionSupervisor`, `Synaptic.Voice.RealtimeSessionSupervisor`, `Synaptic.Voice.Event`, `Synaptic.Voice.TextSegmenter`; engines: `Synaptic.Voice.Sessions.Headless`, `Synaptic.Voice.Sessions.Realtime.OpenAI`, `Synaptic.Voice.Sessions.Realtime.Gemini`; providers: `Synaptic.Voice.Providers.OpenAI.*`, `Synaptic.Voice.Providers.Gemini.*`.
+- **Modules**: `Synaptic.Voice` (API), `Synaptic.Voice.Router`, `Synaptic.Voice.SessionRegistry`, `Synaptic.Voice.HeadlessSessionSupervisor`, `Synaptic.Voice.RealtimeSessionSupervisor`, `Synaptic.Voice.Event`, `Synaptic.Voice.TextSegmenter`; engines: `Synaptic.Voice.Sessions.Headless`, `Synaptic.Voice.Sessions.Realtime.OpenAI`, `Synaptic.Voice.Sessions.Realtime.Gemini`; providers: `Synaptic.Voice.Providers.OpenAI.*`, `Synaptic.Voice.Providers.Gemini.*`, `Synaptic.Voice.Providers.ElevenLabs.*`.
 - **Envelope**: guaranteed fields `:v`, `:session_id`, `:run_id`, `:seq`, `:ts_ms`, `:event`, `:data`.
 - **Event names**: `:turn_started`, `:input_partial_text`, `:input_final_text`, `:assistant_text_chunk`, `:assistant_text_done`, `:assistant_audio_chunk`, `:assistant_audio_done`, `:duplex_interruption`, `:duplex_state_changed`, `:session_error`, `:session_stopped`.
 
@@ -221,4 +232,5 @@ Implement the headless behaviours:
 - `Synaptic.Voice.STTAdapter`
 - `Synaptic.Voice.TTSAdapter`
 
-Realtime is not provider-neutral: OpenAI and Gemini each use dedicated engines.
+Realtime is not provider-neutral: OpenAI and Gemini each use dedicated engines, and
+`provider: :eleven_labs` is headless-only.

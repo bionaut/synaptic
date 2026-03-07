@@ -208,7 +208,8 @@ For implementation and integration details, see [`VOICE.md`](VOICE.md).
 - Voice sessions are registered in `Synaptic.Voice.SessionRegistry` and run under
   `Synaptic.Voice.HeadlessSessionSupervisor` or
   `Synaptic.Voice.RealtimeSessionSupervisor`, depending on mode.
-- Session routing is provider-first (`provider: :openai | :gemini`) with
+- Session routing is provider-first (`provider: :openai | :gemini | :eleven_labs` for
+  headless voice; `:openai | :gemini` for realtime) with
   pure-provider stacks derived internally by `Synaptic.Voice.Router`.
 - Voice sessions subscribe to workflow run events (`synaptic:run:<run_id>`) and
   convert streaming LLM events into normalized voice events published on

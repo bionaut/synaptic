@@ -24,7 +24,7 @@ Session engine:
 ## 2. Prerequisites
 
 Server:
-- provider API key(s): `OPENAI_API_KEY` and/or `GEMINI_API_KEY`
+- provider API key(s): `OPENAI_API_KEY`, `GEMINI_API_KEY`, and/or `ELEVENLABS_API_KEY`
 - Synaptic voice provider config
 
 Client:
@@ -38,7 +38,7 @@ Client:
 ```elixir
 {:ok, %{session_id: session_id, run_id: run_id}} =
   Synaptic.Voice.start_session(MyWorkflow, %{},
-    provider: :gemini,   # or :openai
+    provider: :gemini,   # or :openai / :eleven_labs
     mode: :turn_based,
     keep_alive: true
   )

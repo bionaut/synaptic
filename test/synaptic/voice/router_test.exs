@@ -302,6 +302,34 @@ defmodule Synaptic.Voice.RouterTest do
     _ = Synaptic.stop(run_id, :test_cleanup)
   end
 
+  test "router resolves pure eleven_labs headless bundle by provider" do
+    {:ok, run_id} = Synaptic.start(SimpleWorkflow, %{})
+    wait_for(run_id, :waiting_for_human)
+
+    assert {:ok,
+            %{
+              session_id: session_id,
+              stack: %{stt: :eleven_labs, tts: :eleven_labs, realtime: nil}
+            }} =
+             Synaptic.Voice.attach_run(run_id,
+               provider: :eleven_labs,
+               mode: :turn_based,
+               keep_alive: true
+             )
+
+    session = Synaptic.Voice.inspect_session(session_id)
+    assert session.provider_modules.stt == Synaptic.Voice.Providers.ElevenLabs.STTAdapter
+    assert session.provider_modules.tts == Synaptic.Voice.Providers.ElevenLabs.TTSAdapter
+
+    :ok = Synaptic.Voice.stop_session(session_id, :normal)
+    _ = Synaptic.stop(run_id, :test_cleanup)
+  end
+
+  test "router rejects realtime for eleven_labs provider" do
+    assert {:error, {:unsupported_provider_role, :eleven_labs, :realtime}} =
+             Synaptic.Voice.attach_run("run:test", mode: :realtime, provider: :eleven_labs)
+  end
+
   test "router resolves pure gemini realtime bundle by provider" do
     assert {:ok,
             %{

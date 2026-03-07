@@ -10,4 +10,8 @@ if config_env() == :prod do
   if gemini_api_key = System.get_env("GEMINI_API_KEY") do
     config :synaptic, Synaptic.Voice.Providers.Gemini, api_key: gemini_api_key
   end
+
+  if elevenlabs_api_key = System.get_env("ELEVENLABS_API_KEY") do
+    config :synaptic, Synaptic.Voice.Providers.ElevenLabs, api_key: elevenlabs_api_key
+  end
 end
