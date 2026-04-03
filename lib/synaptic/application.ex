@@ -12,7 +12,9 @@ defmodule Synaptic.Application do
   @spec start(any(), any()) :: {:error, any()} | {:ok, pid()}
   def start(_type, _args) do
     children = [
+      {Phoenix.PubSub, name: Synaptic.PubSub},
       Synaptic.Registry,
+      Synaptic.Monitor.child_specs(),
       Synaptic.RuntimeSupervisor,
       Synaptic.AgentDirectory.Store.InMemory,
       Synaptic.AgentDirectory,
@@ -22,9 +24,10 @@ defmodule Synaptic.Application do
       Synaptic.Voice.SessionSupervisor,
       Synaptic.Voice.Realtime.Registry,
       Synaptic.Voice.Realtime.SessionSupervisor,
-      {Phoenix.PubSub, name: Synaptic.PubSub},
+      Synaptic.Monitor.web_child_specs(),
       {Finch, name: Synaptic.Finch}
     ]
+    |> List.flatten()
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options

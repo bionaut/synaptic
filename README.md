@@ -2,7 +2,8 @@
 
 This repository hosts **Synaptic**, a database-free workflow engine for
 LLM-assisted automations with human-in-the-loop support (Phase 1 of the spec).
-If you want the full module-by-module breakdown, see [`TECHNICAL.md`](TECHNICAL.md).
+If you want the full module-by-module breakdown, see [`docs/technical-overview.md`](docs/technical-overview.md).
+For the browser-based monitor setup guide, see [`docs/monitor-guide.md`](docs/monitor-guide.md).
 
 ## Current progress
 
@@ -861,6 +862,34 @@ Events include `:waiting_for_human`, `:resumed`, `:step_completed`, `:retrying`,
 contains `:run_id` and `:current_step`, so LiveView processes can map events to
 the UI state they represent.
 
+### Dev Monitor UI
+
+Synaptic also includes a dev-only browser monitor for inspecting:
+
+- active and recent runs
+- current step and step history
+- workflow / service / instance topology
+- routed agent calls
+- activity log with timestamps
+- input and output payloads for steps and routed calls
+
+Minimal config:
+
+```elixir
+config :synaptic, Synaptic.Monitor,
+  enabled: config_env() == :dev,
+  history_limit: 500,
+  retention_ms: 300_000
+```
+
+You can use it in two ways:
+
+- embedded in a Phoenix app via `Synaptic.Monitor.Web.Live`
+- standalone on its own port via `Synaptic.Monitor.Web`
+
+For full setup instructions, Phoenix route examples, standalone setup, payload
+inspection notes, and troubleshooting, see [`docs/monitor-guide.md`](docs/monitor-guide.md).
+
 ### Testing streaming in IEx
 
 The demo workflow now supports streaming in the `:generate_learning_plan` step. Here are IEx commands to test streaming functionality:
@@ -1441,7 +1470,7 @@ Synaptic includes an in-package headless voice subsystem under `Synaptic.Voice`
 for integrating audio input/output into existing workflows.
 
 For full API, architecture, config, telemetry, and integration details, see
-[`VOICE.md`](VOICE.md).
+[`docs/voice-guide.md`](docs/voice-guide.md).
 
 ### Quickstart
 

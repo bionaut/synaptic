@@ -21,6 +21,7 @@ defmodule Synaptic.Runner do
           steps: [Step.t()],
           current_step_index: non_neg_integer(),
           context: map(),
+          monitor_context: map(),
           status: :running | :waiting_for_human | :completed | :failed | :stopped,
           waiting: map() | nil,
           history: list(map()),
@@ -78,6 +79,7 @@ defmodule Synaptic.Runner do
       steps: steps,
       current_step_index: start_at_step_index,
       context: Keyword.get(opts, :context, %{}),
+      monitor_context: Keyword.get(opts, :monitor_context, %{}),
       status: :running,
       waiting: nil,
       history: [],
@@ -86,6 +88,7 @@ defmodule Synaptic.Runner do
       async_tasks: %{}
     }
 
+    Synaptic.Monitor.capture_run_started(state)
     {:ok, state, {:continue, :process_next_step}}
   end
 
@@ -140,7 +143,7 @@ defmodule Synaptic.Runner do
         |> Map.put(:waiting, nil)
         |> Map.update!(:context, &Map.put(&1, :human_input, payload))
         |> push_history(%{event: :resumed, payload: payload})
-        |> publish_event(%{event: :resumed, payload: payload})
+        |> publish_event(%{event: :resumed, payload: payload, input: payload})
 
       {:reply, :ok, new_state, {:continue, :process_next_step}}
     else
@@ -260,7 +263,17 @@ defmodule Synaptic.Runner do
             resume_schema: step.resume_schema
           })
           |> push_history(%{step: step.name, status: :waiting, message: message})
-          |> publish_event(%{event: :waiting_for_human, step: step.name, message: message})
+          |> publish_event(%{
+            event: :waiting_for_human,
+            step: step.name,
+            message: message,
+            input: monitor_step_input(step, state.context),
+            output: %{
+              message: message,
+              metadata: metadata,
+              resume_schema: step.resume_schema
+            }
+          })
           |> publish_event(%{event: :waiting_for_human, step: step.name})
 
         {:halt, new_state}
@@ -313,7 +326,12 @@ defmodule Synaptic.Runner do
       end)
       |> increment_step()
       |> push_history(%{step: step.name, status: :ok})
-      |> publish_event(%{event: :step_completed, step: step.name})
+      |> publish_event(%{
+        event: :step_completed,
+        step: step.name,
+        input: monitor_step_input(step, pre_context),
+        output: data
+      })
 
     run_scorers_async(step, state.workflow, state.run_id, pre_context, new_state.context, data)
 
@@ -337,9 +355,22 @@ defmodule Synaptic.Runner do
           end)
           |> Map.put(:current_step_index, target_index)
           |> push_history(%{step: step.name, status: :routed, target: target_step})
-          |> publish_event(%{event: :step_routed, step: step.name, target: target_step})
+          |> publish_event(%{
+            event: :step_routed,
+            step: step.name,
+            target: target_step,
+            input: monitor_step_input(step, pre_context),
+            output: data
+          })
 
-        run_scorers_async(step, state.workflow, state.run_id, pre_context, new_state.context, data)
+        run_scorers_async(
+          step,
+          state.workflow,
+          state.run_id,
+          pre_context,
+          new_state.context,
+          data
+        )
 
         {:continue, new_state}
     end
@@ -365,6 +396,7 @@ defmodule Synaptic.Runner do
       |> Map.put(:current_step, current_step_name(state))
 
     PubSub.broadcast(@pubsub, topic(state.run_id), {:synaptic_event, event})
+    Synaptic.Monitor.capture_run_event(state, event)
     state
   end
 
@@ -481,7 +513,13 @@ defmodule Synaptic.Runner do
         |> Map.delete(:human_input)
       end)
       |> push_history(%{step: step.name, status: :ok, async: true})
-      |> publish_event(%{event: :step_completed, step: step.name, async: true})
+      |> publish_event(%{
+        event: :step_completed,
+        step: step.name,
+        async: true,
+        input: monitor_step_input(step, pre_context),
+        output: data
+      })
       |> maybe_mark_completed()
 
     run_scorers_async(step, state.workflow, state.run_id, pre_context, new_state.context, data)
@@ -591,7 +629,11 @@ defmodule Synaptic.Runner do
     state
     |> Map.update!(:async_tasks, &Map.put(&1, pid, %{monitor_ref: ref, step: step}))
     |> push_history(%{step: step.name, status: :async_started, async: true})
-    |> publish_event(%{event: :async_step_started, step: step.name})
+    |> publish_event(%{
+      event: :async_step_started,
+      step: step.name,
+      input: monitor_step_input(step, state.context)
+    })
   end
 
   defp topic(run_id), do: "synaptic:run:" <> run_id
@@ -611,7 +653,9 @@ defmodule Synaptic.Runner do
         event: :step_error,
         step: step.name,
         reason: reason,
-        retries_remaining: remaining
+        retries_remaining: remaining,
+        input: monitor_step_input(step, state.context),
+        output: %{error: reason}
       })
 
     cond do
@@ -626,7 +670,9 @@ defmodule Synaptic.Runner do
             event: :retrying,
             step: step.name,
             retries_remaining: remaining - 1,
-            reason: reason
+            reason: reason,
+            input: monitor_step_input(step, state.context),
+            output: %{error: reason}
           })
 
         {:continue, new_state}
@@ -638,7 +684,13 @@ defmodule Synaptic.Runner do
           state
           |> Map.put(:status, :failed)
           |> Map.put(:last_error, reason)
-          |> publish_event(%{event: :failed, step: step.name, reason: reason})
+          |> publish_event(%{
+            event: :failed,
+            step: step.name,
+            reason: reason,
+            input: monitor_step_input(step, state.context),
+            output: %{error: reason}
+          })
           |> schedule_shutdown_timer()
 
         {:halt, failed_state}
@@ -804,4 +856,23 @@ defmodule Synaptic.Runner do
   end
 
   defp run_scorers_async(_step, _workflow, _run_id, _pre_context, _post_context, _output), do: :ok
+
+  defp monitor_step_input(%Step{input: input_spec}, context)
+       when is_map(context) and is_map(input_spec) do
+    context =
+      context
+      |> Map.drop([:__run_id__, :__step_name__])
+
+    if map_size(input_spec) > 0 do
+      Map.take(context, Map.keys(input_spec))
+    else
+      context
+    end
+  end
+
+  defp monitor_step_input(_step, context) when is_map(context) do
+    Map.drop(context, [:__run_id__, :__step_name__])
+  end
+
+  defp monitor_step_input(_step, _context), do: %{}
 end

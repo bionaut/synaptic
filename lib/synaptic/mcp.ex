@@ -44,11 +44,15 @@ defmodule Synaptic.MCP do
           {:ok, term()} | {:error, term()}
   def call_tool(%Connection{} = connection, remote_name, args, opts \\ [])
       when is_binary(remote_name) do
-    metadata = mcp_metadata(connection, opts) |> Map.put(:remote_name, remote_name)
+    metadata =
+      connection
+      |> mcp_metadata(opts)
+      |> Map.put(:remote_name, remote_name)
+      |> Map.put(:input, args)
 
     :telemetry.span([:synaptic, :mcp, :tool_call], metadata, fn ->
       result = connection.adapter.call_tool(connection, remote_name, args, opts)
-      {result, metadata}
+      {result, call_result_metadata(result, metadata)}
     end)
   end
 
@@ -179,6 +183,24 @@ defmodule Synaptic.MCP do
   end
 
   defp list_metadata(_, metadata), do: metadata
+
+  defp call_result_metadata({:ok, result}, metadata) do
+    metadata
+    |> Map.put(:result_status, :completed)
+    |> Map.put(:output, result)
+  end
+
+  defp call_result_metadata({:error, reason}, metadata) do
+    metadata
+    |> Map.put(:result_status, :failed)
+    |> Map.put(:output, %{error: reason})
+  end
+
+  defp call_result_metadata(other, metadata) do
+    metadata
+    |> Map.put(:result_status, :completed)
+    |> Map.put(:output, other)
+  end
 
   defp get_from_context(key) do
     case Process.get({:synaptic_context, key}) do

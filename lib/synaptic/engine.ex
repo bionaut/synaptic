@@ -8,13 +8,20 @@ defmodule Synaptic.Engine do
   def start(workflow_module, input, opts) do
     definition = Workflow.definition(workflow_module)
     run_id = Keyword.get(opts, :run_id, generate_run_id())
+    monitor_context =
+      opts
+      |> Keyword.get(:monitor_context, %{})
+      |> Map.new()
+      |> Map.put_new(:workflow, workflow_module)
+      |> Map.put_new(:run_source, :direct)
 
     with {:ok, start_at_step_index} <- validate_start_at_step(opts, definition) do
       child_spec_opts = [
         workflow: workflow_module,
         definition: definition,
         run_id: run_id,
-        context: input
+        context: input,
+        monitor_context: monitor_context
       ]
 
       child_spec_opts =

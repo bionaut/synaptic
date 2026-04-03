@@ -61,6 +61,10 @@ defmodule Synaptic.Voice.Session do
     GenServer.call(Synaptic.Voice.Registry.via(session_id), :cancel_output)
   end
 
+  def playback_drained(session_id) do
+    GenServer.call(Synaptic.Voice.Registry.via(session_id), :playback_drained)
+  end
+
   def stop_session(session_id, reason \\ :normal) do
     GenServer.call(Synaptic.Voice.Registry.via(session_id), {:stop_session, reason})
   end
@@ -128,7 +132,9 @@ defmodule Synaptic.Voice.Session do
         %{session_id: session_id, run_id: run_id, mode: mode}
       )
 
-      {:ok, emit(state, :duplex_state_changed, %{status: :listening, mode: mode}) |> emit(:turn_started, %{})}
+      {:ok,
+       emit(state, :duplex_state_changed, %{status: :listening, mode: mode})
+       |> emit(:turn_started, %{})}
     end
   end
 
@@ -171,6 +177,19 @@ defmodule Synaptic.Voice.Session do
   def handle_call(:cancel_output, _from, state) do
     :ok = state.tts_adapter.cancel_output(state.tts_pid)
     {:reply, :ok, emit(state, :duplex_interruption, %{reason: :cancel_output})}
+  end
+
+  def handle_call(:playback_drained, _from, state) do
+    state =
+      state
+      |> update_status(:listening)
+      |> emit(:duplex_state_changed, %{
+        status: :listening,
+        mode: state.mode,
+        source: :playback_drained
+      })
+
+    {:reply, :ok, state}
   end
 
   def handle_call({:stop_session, reason}, _from, state) do
@@ -424,7 +443,11 @@ defmodule Synaptic.Voice.Session do
     payload = Event.build(state.session_id, state.run_id, seq, event, data)
 
     if Event.valid?(payload) do
-      PubSub.broadcast(Synaptic.PubSub, session_topic(state.session_id), {:synaptic_voice_event, payload})
+      PubSub.broadcast(
+        Synaptic.PubSub,
+        session_topic(state.session_id),
+        {:synaptic_voice_event, payload}
+      )
     end
 
     %{state | seq: seq}

@@ -33,6 +33,15 @@ config :synaptic, Synaptic.Voice.OpenAI,
   voice: "alloy",
   audio_format: "mp3"
 
+config :synaptic, Synaptic.Monitor,
+  enabled: config_env() == :dev,
+  history_limit: 500,
+  retention_ms: 300_000
+
+config :synaptic, Synaptic.Monitor.Web,
+  enabled: false,
+  port: 4050
+
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
   metadata: []

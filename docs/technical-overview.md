@@ -203,7 +203,7 @@ experimentation.
 
 Synaptic ships a headless voice session runtime under `Synaptic.Voice`.
 
-For implementation and integration details, see [`VOICE.md`](VOICE.md).
+For implementation and integration details, see [`voice-guide.md`](voice-guide.md).
 
 - `Synaptic.Voice.Session` is a GenServer keyed by session id and supervised by
   `Synaptic.Voice.SessionSupervisor`.

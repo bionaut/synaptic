@@ -61,8 +61,20 @@ defmodule Synaptic.Voice.SessionTest do
     @behaviour Synaptic.Voice.STTAdapter
 
     def start_link(owner, _opts), do: GenServer.start_link(__MODULE__, owner)
-    def push_audio(pid, _audio_chunk, _opts), do: (GenServer.cast(pid, :noop); :ok)
-    def end_turn(pid, _opts), do: (GenServer.cast(pid, :end_turn); :ok)
+
+    def push_audio(pid, _audio_chunk, _opts),
+      do:
+        (
+          GenServer.cast(pid, :noop)
+          :ok
+        )
+
+    def end_turn(pid, _opts),
+      do:
+        (
+          GenServer.cast(pid, :end_turn)
+          :ok
+        )
 
     def stop(pid, reason) do
       GenServer.stop(pid, reason)
@@ -111,7 +123,12 @@ defmodule Synaptic.Voice.SessionTest do
     def init(owner), do: {:ok, %{owner: owner}}
 
     def handle_cast({:synthesize, text}, state) do
-      send(state.owner, {:synaptic_voice, :tts_chunk, "audio:" <> text, %{provider: :fake, content_type: "audio/mpeg", audio_format: "mp3"}})
+      send(
+        state.owner,
+        {:synaptic_voice, :tts_chunk, "audio:" <> text,
+         %{provider: :fake, content_type: "audio/mpeg", audio_format: "mp3"}}
+      )
+
       {:noreply, state}
     end
 
@@ -148,7 +165,8 @@ defmodule Synaptic.Voice.SessionTest do
     assert snapshot.context.heard == "hello from voice"
     assert snapshot.context.done
 
-    assert_receive {:synaptic_voice_event, %{event: :input_final_text, data: %{text: "hello from voice"}}},
+    assert_receive {:synaptic_voice_event,
+                    %{event: :input_final_text, data: %{text: "hello from voice"}}},
                    1_000
   end
 
@@ -174,8 +192,12 @@ defmodule Synaptic.Voice.SessionTest do
     )
 
     assert_receive {:synaptic_voice_event,
-                    %{event: :assistant_audio_chunk, data: %{content_type: "audio/mpeg", audio_format: "mp3", audio_bytes: bytes}}},
+                    %{
+                      event: :assistant_audio_chunk,
+                      data: %{content_type: "audio/mpeg", audio_format: "mp3", audio_bytes: bytes}
+                    }},
                    1_000
+
     assert is_integer(bytes) and bytes > 0
 
     assert :ok = Synaptic.Voice.push_audio(session_id, <<1, 2, 3>>)
@@ -203,11 +225,68 @@ defmodule Synaptic.Voice.SessionTest do
     assert :ok = Synaptic.Voice.push_audio(session_id, <<1, 2, 3>>)
     assert :ok = Synaptic.Voice.end_turn(session_id)
 
-    assert_receive {:synaptic_voice_event, %{event: :session_error, data: %{reason: :empty_transcript}}}, 1_000
+    assert_receive {:synaptic_voice_event,
+                    %{event: :session_error, data: %{reason: :empty_transcript}}},
+                   1_000
+
     refute_receive {:synaptic_voice_event, %{event: :input_final_text}}, 100
 
     snapshot = Synaptic.inspect(run_id)
     assert snapshot.status == :waiting_for_human
+  end
+
+  test "start_session honors mode alias for classic sessions" do
+    {:ok, session_id} =
+      Synaptic.Voice.start_session(VoiceWorkflow, %{},
+        stt_adapter: FakeSTT,
+        tts_adapter: FakeTTS,
+        keep_alive: true,
+        mode: :turn_based
+      )
+
+    session_snapshot = Synaptic.Voice.inspect_session(session_id)
+
+    assert session_snapshot.mode == :turn_based
+    assert is_binary(session_snapshot.run_id)
+
+    assert :ok = Synaptic.Voice.stop_session(session_id, :test_cleanup)
+    _ = Synaptic.stop(session_snapshot.run_id, :test_cleanup)
+  end
+
+  test "playback_drained moves duplex sessions back to listening" do
+    {:ok, run_id} = Synaptic.start(VoiceWorkflow, %{})
+    wait_for(run_id, :waiting_for_human)
+
+    {:ok, session_id} =
+      Synaptic.Voice.attach_run(run_id,
+        stt_adapter: FakeSTT,
+        tts_adapter: FakeTTS,
+        keep_alive: true,
+        voice_mode: :duplex
+      )
+
+    :ok = Synaptic.Voice.subscribe_session(session_id)
+    on_exit(fn -> Synaptic.Voice.unsubscribe_session(session_id) end)
+
+    PubSub.broadcast(
+      Synaptic.PubSub,
+      "synaptic:run:" <> run_id,
+      {:synaptic_event, %{event: :stream_chunk, chunk: "Assistant speaking."}}
+    )
+
+    assert_receive {:synaptic_voice_event, %{event: :assistant_audio_chunk}}, 1_000
+    assert Synaptic.Voice.inspect_session(session_id).status == :speaking
+
+    assert :ok = Synaptic.Voice.playback_drained(session_id)
+
+    assert Synaptic.Voice.inspect_session(session_id).status == :listening
+
+    assert_receive {:synaptic_voice_event,
+                    %{
+                      event: :duplex_state_changed,
+                      data: %{source: :playback_drained, status: :listening}
+                    }},
+                   1_000
   end
 
   defp wait_for(run_id, target_status, attempts \\ 100)

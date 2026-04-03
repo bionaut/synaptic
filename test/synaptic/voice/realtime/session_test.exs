@@ -200,4 +200,32 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
     :ok = Synaptic.Voice.Realtime.stop_session(session_id, :normal)
     _ = Synaptic.stop(run_id, :test_cleanup)
   end
+
+  test "voice facade delegates realtime mode and helper calls" do
+    assert {:ok, %{session_id: session_id, run_id: run_id, realtime: realtime}} =
+             Synaptic.Voice.start_session(RealtimeWorkflow, %{},
+               mode: :realtime,
+               webrtc_bootstrap_fun: fn _opts ->
+                 {:ok,
+                  %{
+                    client_secret: %{"value" => "test-secret"},
+                    model: "gpt-4o-realtime-preview",
+                    voice: "alloy",
+                    session_id: "sess_test"
+                  }}
+               end
+             )
+
+    assert realtime.model == "gpt-4o-realtime-preview"
+
+    :ok = Synaptic.Voice.subscribe_session(session_id)
+    :ok = Synaptic.Voice.client_connected(session_id)
+
+    assert_receive {:synaptic_voice_realtime_event,
+                    %{event: :duplex_state_changed, data: %{status: :listening}}},
+                   1_000
+
+    :ok = Synaptic.Voice.stop_session(session_id, :normal)
+    _ = Synaptic.stop(run_id, :test_cleanup)
+  end
 end

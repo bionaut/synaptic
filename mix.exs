@@ -4,7 +4,7 @@ defmodule Synaptic.MixProject do
   def project do
     [
       app: :synaptic,
-      version: "0.3.0-alpha.5",
+      version: "0.3.0-alpha.7",
       elixir: "~> 1.14",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -13,7 +13,16 @@ defmodule Synaptic.MixProject do
       package: package(),
       docs: [
         main: "readme",
-        extras: ["README.md", "TECHNICAL.md", "VOICE.md"],
+        extras: [
+          "README.md",
+          "docs/monitor-guide.md",
+          "docs/technical-overview.md",
+          "docs/voice-guide.md",
+          "docs/safety-validation-todo.md",
+          "docs/four-equal-agents-peer-mesh-tutorial.md",
+          "docs/voice-and-agents-x-trends-trading-tutorial.md",
+          "docs/synaptic-for-founders-use-cases.md"
+        ],
         authors: ["Synaptic contributors"]
       ],
       deps: deps()
@@ -43,6 +52,11 @@ defmodule Synaptic.MixProject do
       {:finch, "~> 0.13"},
       {:jason, "~> 1.2"},
       {:yaml_elixir, "~> 2.9"},
+      {:phoenix, "~> 1.7", optional: true},
+      {:phoenix_html, "~> 4.1", optional: true},
+      {:phoenix_live_view, "~> 1.0", optional: true},
+      {:plug_cowboy, "~> 2.7", optional: true},
+      {:lazy_html, ">= 0.1.0", only: :test},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:bypass, "~> 2.1", only: :test}
     ]

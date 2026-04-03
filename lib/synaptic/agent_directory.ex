@@ -25,13 +25,17 @@ defmodule Synaptic.AgentDirectory do
       |> Map.put(:updated_at, now)
 
     emit(:register, %{kind: :service, service_id: service_id, tenant_id: tenant_id})
-    store().put_service(record)
+    result = store().put_service(record)
+    if match?({:ok, _}, result), do: capture_service_event(record, :registered)
+    result
   end
 
   def deregister_service(service_id, opts \\ []) do
     tenant_id = tenant_id(opts)
     emit(:deregister, %{kind: :service, service_id: service_id, tenant_id: tenant_id})
-    store().delete_service(tenant_id, service_id)
+    result = store().delete_service(tenant_id, service_id)
+    if result == :ok, do: capture_service_event(%{service_id: service_id, tenant_id: tenant_id}, :deregistered)
+    result
   end
 
   def lookup_service(service_id, opts \\ []) do
@@ -74,7 +78,9 @@ defmodule Synaptic.AgentDirectory do
       |> Map.put(:last_activity_at, now)
 
     emit(:register, %{kind: :instance, instance_id: record.instance_id, tenant_id: tenant_id})
-    store().put_instance(record)
+    result = store().put_instance(record)
+    if match?({:ok, _}, result), do: capture_instance_event(record, record.status || :starting)
+    result
   end
 
   def heartbeat_instance(instance_id, attrs \\ %{}, opts \\ []) do
@@ -94,7 +100,10 @@ defmodule Synaptic.AgentDirectory do
     if match?({:ok, _}, result), do: emit(:update, %{kind: :instance, instance_id: instance_id})
 
     case result do
-      {:ok, record} -> {:ok, record}
+      {:ok, record} ->
+        capture_instance_event(record, record.status || :updated)
+        {:ok, record}
+
       :error -> {:error, :not_found}
     end
   end
@@ -102,7 +111,9 @@ defmodule Synaptic.AgentDirectory do
   def deregister_instance(instance_id, opts \\ []) do
     tenant_id = tenant_id(opts)
     emit(:deregister, %{kind: :instance, instance_id: instance_id, tenant_id: tenant_id})
-    store().delete_instance(tenant_id, instance_id)
+    result = store().delete_instance(tenant_id, instance_id)
+    if result == :ok, do: capture_instance_event(%{instance_id: instance_id, tenant_id: tenant_id}, :deregistered)
+    result
   end
 
   def lookup_instance(instance_id, opts \\ []) do
@@ -144,7 +155,9 @@ defmodule Synaptic.AgentDirectory do
       |> then(&struct(TaskReference, &1))
 
     emit(:task_reference, %{event: :put, task_ref_id: record.task_ref_id})
-    store().put_task_reference(Map.from_struct(record))
+    result = store().put_task_reference(Map.from_struct(record))
+    if match?({:ok, _}, result), do: capture_task_ref_event(record, record.status || :running)
+    result
   end
 
   def update_task_reference(task_ref_id, attrs, opts \\ []) when is_map(attrs) do
@@ -156,7 +169,10 @@ defmodule Synaptic.AgentDirectory do
            |> Map.put(:updated_at, now())
            |> Map.put(:last_activity_at, Map.get(attrs, :last_activity_at, now()))
          end) do
-      {:ok, rec} -> {:ok, rec}
+      {:ok, rec} ->
+        capture_task_ref_event(rec, Map.get(rec, :status, :updated))
+        {:ok, rec}
+
       :error -> {:error, :not_found}
     end
   end
@@ -372,5 +388,74 @@ defmodule Synaptic.AgentDirectory do
 
   defp emit(event, metadata) do
     :telemetry.execute([:synaptic, :agent_directory, event], %{}, metadata)
+  end
+
+  defp capture_service_event(record, status) do
+    Synaptic.Monitor.capture(%{
+      kind: :service,
+      status: status,
+      service_id: Map.get(record, :service_id),
+      summary: "Service #{Map.get(record, :service_id)} #{status}",
+      data: %{
+        tenant_id: Map.get(record, :tenant_id),
+        capabilities: Map.get(record, :capabilities),
+        visibility: Map.get(record, :visibility),
+        service_kind: Map.get(record, :kind),
+        provider: Map.get(record, :provider),
+        provider_ref: Map.get(record, :provider_ref),
+        routing_mode: Map.get(record, :routing_mode),
+        lifecycle_mode: Map.get(record, :lifecycle_mode)
+      }
+    })
+  end
+
+  defp capture_instance_event(record, status) do
+    Synaptic.Monitor.capture(%{
+      kind: :instance,
+      status: status,
+      service_id: Map.get(record, :service_id),
+      instance_id: Map.get(record, :instance_id),
+      run_id: endpoint_run_id(record),
+      purpose: Map.get(record, :purpose),
+      summary: "Instance #{Map.get(record, :instance_id)} #{status}",
+      data: %{
+        tenant_id: Map.get(record, :tenant_id),
+        endpoint_type: Map.get(record, :endpoint_type),
+        endpoint_ref: Map.get(record, :endpoint_ref),
+        health: Map.get(record, :health),
+        last_error: Map.get(record, :last_error),
+        labels: Map.get(record, :labels)
+      }
+    })
+  end
+
+  defp capture_task_ref_event(record, status) do
+    metadata = Map.get(record, :metadata, %{}) |> Map.new()
+
+    Synaptic.Monitor.capture(%{
+      kind: :task_ref,
+      status: status,
+      service_id: Map.get(record, :service_id),
+      instance_id: Map.get(record, :instance_id),
+      task_ref_id: Map.get(record, :task_ref_id),
+      run_id: Map.get(record, :run_id),
+      caller_agent_id: Map.get(record, :caller_agent_id),
+      request_id: metadata[:request_id],
+      purpose: Map.get(record, :purpose),
+      summary: "Task reference #{Map.get(record, :task_ref_id)} #{status}",
+      data: %{
+        tenant_id: Map.get(record, :tenant_id),
+        user_id: Map.get(record, :user_id),
+        session_id: Map.get(record, :session_id),
+        alias_keys: Map.get(record, :alias_keys),
+        last_error: metadata[:last_error]
+      }
+    })
+  end
+
+  defp endpoint_run_id(record) do
+    if Map.get(record, :endpoint_type) == :run_id do
+      Map.get(record, :endpoint_ref)
+    end
   end
 end
