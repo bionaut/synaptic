@@ -51,8 +51,9 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
   end
 
   test "start_session returns realtime bootstrap payload" do
-    assert {:ok, %{session_id: session_id, run_id: run_id, realtime: realtime}} =
-             Synaptic.Voice.Realtime.start_session(RealtimeWorkflow, %{},
+    assert {:ok, %{session_id: session_id, run_id: run_id, transport: transport, mode: :realtime}} =
+             Synaptic.Voice.start_session(RealtimeWorkflow, %{},
+               mode: :realtime,
                webrtc_bootstrap_fun: fn _opts ->
                  {:ok,
                   %{
@@ -66,15 +67,16 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
 
     assert is_binary(session_id)
     assert is_binary(run_id)
-    assert realtime.model == "gpt-4o-realtime-preview"
+    assert transport.model == "gpt-4o-realtime-preview"
 
-    assert :ok = Synaptic.Voice.Realtime.stop_session(session_id, :normal)
+    assert :ok = Synaptic.Voice.stop_session(session_id, :normal)
     _ = Synaptic.stop(run_id, :test_cleanup)
   end
 
   test "final transcript triggers backchannel and workflow response" do
     assert {:ok, %{session_id: session_id, run_id: run_id}} =
-             Synaptic.Voice.Realtime.start_session(RealtimeWorkflow, %{},
+             Synaptic.Voice.start_session(RealtimeWorkflow, %{},
+               mode: :realtime,
                webrtc_bootstrap_fun: fn _opts ->
                  {:ok,
                   %{
@@ -86,28 +88,29 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
                end
              )
 
-    :ok = Synaptic.Voice.Realtime.subscribe_session(session_id)
-    :ok = Synaptic.Voice.Realtime.client_connected(session_id)
+    :ok = Synaptic.Voice.subscribe_session(session_id)
+    :ok = Synaptic.Voice.client_connected(session_id)
 
     :ok =
-      Synaptic.Voice.Realtime.ingest_provider_event(session_id, %{
+      Synaptic.Voice.ingest_provider_event(session_id, %{
         "type" => "conversation.item.input_audio_transcription.completed",
         "transcript" => "summarize phoenixframework/phoenix"
       })
 
-    assert_receive {:synaptic_voice_realtime_event, %{event: :input_final_text}}, 1_000
-    assert_receive {:synaptic_voice_realtime_event, %{event: :backchannel_sent}}, 1_000
-    assert_receive {:synaptic_voice_realtime_event, %{event: :workflow_started}}, 1_000
-    assert_receive {:synaptic_voice_realtime_event, %{event: :assistant_response_started}}, 4_000
-    assert_receive {:synaptic_voice_realtime_event, %{event: :provider_outbound}}, 4_000
+    assert_receive {:synaptic_voice_event, %{event: :input_final_text}}, 1_000
+    assert_receive {:synaptic_voice_event, %{event: :backchannel_sent}}, 1_000
+    assert_receive {:synaptic_voice_event, %{event: :workflow_started}}, 1_000
+    assert_receive {:synaptic_voice_event, %{event: :assistant_response_started}}, 4_000
+    assert_receive {:synaptic_voice_event, %{event: :provider_outbound}}, 4_000
 
-    :ok = Synaptic.Voice.Realtime.stop_session(session_id, :normal)
+    :ok = Synaptic.Voice.stop_session(session_id, :normal)
     _ = Synaptic.stop(run_id, :test_cleanup)
   end
 
   test "suppresses autonomous provider responses while workflow is running" do
     assert {:ok, %{session_id: session_id, run_id: run_id}} =
-             Synaptic.Voice.Realtime.start_session(SlowRealtimeWorkflow, %{},
+             Synaptic.Voice.start_session(SlowRealtimeWorkflow, %{},
+               mode: :realtime,
                backchannel_enabled: false,
                webrtc_bootstrap_fun: fn _opts ->
                  {:ok,
@@ -120,52 +123,53 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
                end
              )
 
-    :ok = Synaptic.Voice.Realtime.subscribe_session(session_id)
-    :ok = Synaptic.Voice.Realtime.client_connected(session_id)
+    :ok = Synaptic.Voice.subscribe_session(session_id)
+    :ok = Synaptic.Voice.client_connected(session_id)
 
     :ok =
-      Synaptic.Voice.Realtime.ingest_provider_event(session_id, %{
+      Synaptic.Voice.ingest_provider_event(session_id, %{
         "type" => "conversation.item.input_audio_transcription.completed",
         "transcript" => "summarize phoenixframework/phoenix"
       })
 
-    assert_receive {:synaptic_voice_realtime_event, %{event: :workflow_started}}, 1_000
+    assert_receive {:synaptic_voice_event, %{event: :workflow_started}}, 1_000
 
     :ok =
-      Synaptic.Voice.Realtime.ingest_provider_event(session_id, %{
+      Synaptic.Voice.ingest_provider_event(session_id, %{
         "type" => "response.created"
       })
 
     :ok =
-      Synaptic.Voice.Realtime.ingest_provider_event(session_id, %{
+      Synaptic.Voice.ingest_provider_event(session_id, %{
         "type" => "response.audio_transcript.done",
         "transcript" => "I'm sorry, I can't look that up right now."
       })
 
     :ok =
-      Synaptic.Voice.Realtime.ingest_provider_event(session_id, %{
+      Synaptic.Voice.ingest_provider_event(session_id, %{
         "type" => "response.done"
       })
 
-    assert_receive {:synaptic_voice_realtime_event, %{event: :assistant_response_suppressed}},
+    assert_receive {:synaptic_voice_event, %{event: :assistant_response_suppressed}},
                    1_000
 
-    refute_receive {:synaptic_voice_realtime_event,
+    refute_receive {:synaptic_voice_event,
                     %{
                       event: :assistant_text_chunk,
                       data: %{text: "I'm sorry, I can't look that up right now."}
                     }},
                    300
 
-    assert_receive {:synaptic_voice_realtime_event, %{event: :provider_outbound}}, 2_000
+    assert_receive {:synaptic_voice_event, %{event: :provider_outbound}}, 2_000
 
-    :ok = Synaptic.Voice.Realtime.stop_session(session_id, :normal)
+    :ok = Synaptic.Voice.stop_session(session_id, :normal)
     _ = Synaptic.stop(run_id, :test_cleanup)
   end
 
   test "speech_started interruption does not cancel in-flight workflow" do
     assert {:ok, %{session_id: session_id, run_id: run_id}} =
-             Synaptic.Voice.Realtime.start_session(SlowRealtimeWorkflow, %{},
+             Synaptic.Voice.start_session(SlowRealtimeWorkflow, %{},
+               mode: :realtime,
                backchannel_enabled: false,
                webrtc_bootstrap_fun: fn _opts ->
                  {:ok,
@@ -178,26 +182,26 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
                end
              )
 
-    :ok = Synaptic.Voice.Realtime.subscribe_session(session_id)
-    :ok = Synaptic.Voice.Realtime.client_connected(session_id)
+    :ok = Synaptic.Voice.subscribe_session(session_id)
+    :ok = Synaptic.Voice.client_connected(session_id)
 
     :ok =
-      Synaptic.Voice.Realtime.ingest_provider_event(session_id, %{
+      Synaptic.Voice.ingest_provider_event(session_id, %{
         "type" => "conversation.item.input_audio_transcription.completed",
         "transcript" => "summarize phoenixframework/phoenix"
       })
 
-    assert_receive {:synaptic_voice_realtime_event, %{event: :workflow_started}}, 1_000
+    assert_receive {:synaptic_voice_event, %{event: :workflow_started}}, 1_000
 
     :ok =
-      Synaptic.Voice.Realtime.ingest_provider_event(session_id, %{
+      Synaptic.Voice.ingest_provider_event(session_id, %{
         "type" => "input_audio_buffer.speech_started"
       })
 
-    refute_receive {:synaptic_voice_realtime_event, %{event: :workflow_canceled}}, 500
-    assert_receive {:synaptic_voice_realtime_event, %{event: :assistant_response_started}}, 2_000
+    refute_receive {:synaptic_voice_event, %{event: :workflow_canceled}}, 500
+    assert_receive {:synaptic_voice_event, %{event: :assistant_response_started}}, 2_000
 
-    :ok = Synaptic.Voice.Realtime.stop_session(session_id, :normal)
+    :ok = Synaptic.Voice.stop_session(session_id, :normal)
     _ = Synaptic.stop(run_id, :test_cleanup)
   end
 
@@ -221,7 +225,7 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
     :ok = Synaptic.Voice.subscribe_session(session_id)
     :ok = Synaptic.Voice.client_connected(session_id)
 
-    assert_receive {:synaptic_voice_realtime_event,
+    assert_receive {:synaptic_voice_event,
                     %{event: :duplex_state_changed, data: %{status: :listening}}},
                    1_000
 

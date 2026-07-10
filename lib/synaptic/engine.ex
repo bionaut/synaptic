@@ -8,6 +8,7 @@ defmodule Synaptic.Engine do
   def start(workflow_module, input, opts) do
     definition = Workflow.definition(workflow_module)
     run_id = Keyword.get(opts, :run_id, generate_run_id())
+
     monitor_context =
       opts
       |> Keyword.get(:monitor_context, %{})

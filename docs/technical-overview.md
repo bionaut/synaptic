@@ -205,14 +205,25 @@ Synaptic ships a headless voice session runtime under `Synaptic.Voice`.
 
 For implementation and integration details, see [`voice-guide.md`](voice-guide.md).
 
-- `Synaptic.Voice.Session` is a GenServer keyed by session id and supervised by
-  `Synaptic.Voice.SessionSupervisor`.
+- Voice sessions are registered in `Synaptic.Voice.SessionRegistry` and run under
+  `Synaptic.Voice.HeadlessSessionSupervisor` or
+  `Synaptic.Voice.RealtimeSessionSupervisor`, depending on mode.
+- Session routing is provider-first (`provider: :openai | :gemini | :eleven_labs` for
+  headless voice; `:openai | :gemini` for realtime) with
+  pure-provider stacks derived internally by `Synaptic.Voice.Router`.
 - Voice sessions subscribe to workflow run events (`synaptic:run:<run_id>`) and
   convert streaming LLM events into normalized voice events published on
   `synaptic:voice:session:<session_id>`.
 - STT/TTS integrations are pluggable via behaviours:
   - `Synaptic.Voice.STTAdapter`
   - `Synaptic.Voice.TTSAdapter`
-- OpenAI-oriented adapters are available under `Synaptic.Voice.OpenAI.*`.
+- Headless voice now resolves provider capability metadata and picks an internal
+  TTS strategy (`:segmented_batch | :single_shot | :streaming`) with a small
+  pure-function decision module. Current built-in providers default to
+  `:single_shot` for turn-level TTS consistency.
+- Provider adapters are available under `Synaptic.Voice.Providers.*`.
+- Realtime engines are provider-specific:
+  `Synaptic.Voice.Sessions.Realtime.OpenAI` and
+  `Synaptic.Voice.Sessions.Realtime.Gemini`.
 - Event envelopes are versioned via `Synaptic.Voice.Event` and include
   `%{v: 1, session_id, run_id, seq, ts_ms, event, data}`.

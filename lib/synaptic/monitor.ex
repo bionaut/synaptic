@@ -39,7 +39,8 @@ defmodule Synaptic.Monitor do
   end
 
   def web_child_specs do
-    if enabled?() and Keyword.get(web_config(), :enabled, false) and Code.ensure_loaded?(Synaptic.Monitor.Web) do
+    if enabled?() and Keyword.get(web_config(), :enabled, false) and
+         Code.ensure_loaded?(Synaptic.Monitor.Web) do
       [{Synaptic.Monitor.Web, web_config()}]
     else
       []

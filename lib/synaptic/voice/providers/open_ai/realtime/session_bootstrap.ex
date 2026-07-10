@@ -1,10 +1,7 @@
-defmodule Synaptic.Voice.OpenAI.WebRTCHelper do
-  @moduledoc """
-  WebRTC session helper utilities for creating OpenAI ephemeral sessions and
-  normalizing events.
-  """
+defmodule Synaptic.Voice.Providers.OpenAI.Realtime.SessionBootstrap do
+  @moduledoc false
 
-  alias Synaptic.Voice.OpenAI
+  alias Synaptic.Voice.Providers.OpenAI
 
   @default_endpoint "https://api.openai.com/v1/realtime/sessions"
 
@@ -63,14 +60,12 @@ defmodule Synaptic.Voice.OpenAI.WebRTCHelper do
     end
   end
 
-  @doc """
-  Creates a browser bootstrap payload for direct WebRTC media setup.
-  """
   @spec create_browser_bootstrap(keyword()) :: {:ok, map()} | {:error, term()}
   def create_browser_bootstrap(opts \\ []) do
     with {:ok, session} <- create_ephemeral_session(opts) do
       {:ok,
        %{
+         provider: :openai,
          client_secret: Map.get(session, "client_secret", %{}),
          model: Map.get(session, "model", Keyword.get(opts, :model)),
          voice: Map.get(session, "voice", Keyword.get(opts, :voice)),
@@ -80,12 +75,6 @@ defmodule Synaptic.Voice.OpenAI.WebRTCHelper do
        }}
     end
   end
-
-  @doc """
-  Normalizes provider events by delegating to WS helper semantics.
-  """
-  @spec normalize_event(map()) :: {:ok, map()} | {:error, term()}
-  def normalize_event(payload), do: Synaptic.Voice.OpenAI.WSHelper.normalize_event(payload)
 
   defp endpoint(opts),
     do: opts[:endpoint] || OpenAI.config(opts)[:webrtc_endpoint] || @default_endpoint

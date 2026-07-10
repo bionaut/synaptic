@@ -7,7 +7,9 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
     use Supervisor
 
     def start_link(opts \\ []) do
-      Supervisor.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__.Supervisor))
+      Supervisor.start_link(__MODULE__, opts,
+        name: Keyword.get(opts, :name, __MODULE__.Supervisor)
+      )
     end
 
     def child_spec(opts) do
@@ -31,22 +33,20 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
       Application.put_env(
         :synaptic,
         Synaptic.Monitor.Web.Endpoint,
-        [
-          adapter: adapter,
-          url: [host: "localhost"],
-          http: [ip: {127, 0, 0, 1}, port: port],
-          secret_key_base: String.duplicate("monitor_secret_key_base_", 4),
-          server: true,
-          render_errors: [
-            formats: [
-              html: Synaptic.Monitor.Web.ErrorHTML,
-              json: Synaptic.Monitor.Web.ErrorJSON
-            ],
-            layout: false
+        adapter: adapter,
+        url: [host: "localhost"],
+        http: [ip: {127, 0, 0, 1}, port: port],
+        secret_key_base: String.duplicate("monitor_secret_key_base_", 4),
+        server: true,
+        render_errors: [
+          formats: [
+            html: Synaptic.Monitor.Web.ErrorHTML,
+            json: Synaptic.Monitor.Web.ErrorJSON
           ],
-          pubsub_server: Synaptic.PubSub,
-          live_view: [signing_salt: "synaptic-monitor-salt"]
-        ]
+          layout: false
+        ],
+        pubsub_server: Synaptic.PubSub,
+        live_view: [signing_salt: "synaptic-monitor-salt"]
       )
     end
 
@@ -55,7 +55,8 @@ if Code.ensure_loaded?(Phoenix.Endpoint) do
         Code.ensure_loaded?(Plug.Cowboy) and function_exported?(Plug.Cowboy, :child_spec, 1) ->
           Phoenix.Endpoint.Cowboy2Adapter
 
-        Code.ensure_loaded?(Bandit.PhoenixAdapter) and function_exported?(Bandit.PhoenixAdapter, :child_specs, 2) ->
+        Code.ensure_loaded?(Bandit.PhoenixAdapter) and
+            function_exported?(Bandit.PhoenixAdapter, :child_specs, 2) ->
           Bandit.PhoenixAdapter
 
         true ->

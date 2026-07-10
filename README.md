@@ -1476,11 +1476,14 @@ For full API, architecture, config, telemetry, and integration details, see
 
 ```elixir
 {:ok, run_id} = Synaptic.start(MyWorkflow, %{})
-{:ok, session_id} = Synaptic.Voice.attach_run(run_id)
+{:ok, %{session_id: session_id, stack: stack}} =
+  Synaptic.Voice.attach_run(run_id, provider: :openai, mode: :duplex)
 
 :ok = Synaptic.Voice.subscribe_session(session_id)
 :ok = Synaptic.Voice.push_text(session_id, "Hello")
 :ok = Synaptic.Voice.end_turn(session_id)
+
+# stack is pure-provider: %{stt: :openai, tts: :openai, realtime: nil}
 ```
 
 Voice session events are published on `Synaptic.PubSub` topic
@@ -1498,5 +1501,6 @@ Important events:
 - `:duplex_interruption`
 - `:session_stopped`
 
-Default mode is full duplex (`voice_mode: :duplex`), with
-`voice_mode: :turn_based` available as a fallback.
+Default mode is full duplex (`mode: :duplex`), with `mode: :turn_based` as a
+fallback. Realtime is available through the same public module with
+`mode: :realtime` and `provider: :openai | :gemini`.

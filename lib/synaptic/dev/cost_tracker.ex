@@ -49,7 +49,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
         nil
       )
 
-      Logger.info("[cost_tracker] attached — tracking LLM token usage")
+      Logger.debug("[cost_tracker] attached — tracking LLM token usage")
       :ok
     end
 
@@ -78,7 +78,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
       })
 
       if total > 0 do
-        Logger.info(
+        Logger.debug(
           "[cost_tracker] LLM call model=#{model} " <>
             "tokens=#{prompt}+#{completion}=#{total} " <>
             "cost=$#{Float.round(cost, 6)} " <>
@@ -94,7 +94,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
 
       record(:mcp, %{server: server, tool: tool, duration_ms: duration_ms})
 
-      Logger.info(
+      Logger.debug(
         "[cost_tracker] MCP tool server=#{server} tool=#{tool} duration=#{duration_ms}ms"
       )
     end

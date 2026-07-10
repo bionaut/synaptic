@@ -229,7 +229,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
           required: ["topic"]
         },
         handler: fn %{"topic" => topic} ->
-          Logger.info("Looking up resources for topic: #{topic}")
+          Logger.debug("Looking up resources for topic: #{topic}")
 
           # Just return an empty list for now
           []
@@ -294,13 +294,13 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
     end
 
     llm_router :decide_next,
-      [
-        {"an email and phone number are both available", :finish},
-        {"the email is missing but a phone number is available", :ask_email},
-        {"the phone number is missing but an email is available", :ask_phone},
-        {"both email and phone are missing or unclear", :ask_both}
-      ],
-      prompt: "Choose the best next step based on the extracted contact details." do
+               [
+                 {"an email and phone number are both available", :finish},
+                 {"the email is missing but a phone number is available", :ask_email},
+                 {"the phone number is missing but an email is available", :ask_phone},
+                 {"both email and phone are missing or unclear", :ask_both}
+               ],
+               prompt: "Choose the best next step based on the extracted contact details." do
       %{
         extracted_email: Map.get(context, :extracted_email),
         extracted_phone: Map.get(context, :extracted_phone),
@@ -395,7 +395,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
 
     step :prepare, input: %{topic: :string} do
       topic = Map.get(context, :topic, "unknown topic")
-      Logger.info("[agent_worker] preparing topic=#{inspect(topic)}")
+      Logger.debug("[agent_worker] preparing topic=#{inspect(topic)}")
 
       {:ok,
        %{
@@ -410,7 +410,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
       resume_schema: %{approved: :boolean} do
       case get_in(context, [:human_input, :approved]) do
         nil ->
-          Logger.info("[agent_worker] waiting for approval topic=#{inspect(context.topic)}")
+          Logger.debug("[agent_worker] waiting for approval topic=#{inspect(context.topic)}")
 
           suspend_for_human(
             "Approve worker output for #{context.topic}?",
@@ -418,18 +418,18 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
           )
 
         true ->
-          Logger.info("[agent_worker] approved topic=#{inspect(context.topic)}")
+          Logger.debug("[agent_worker] approved topic=#{inspect(context.topic)}")
           {:ok, %{worker_status: :approved}}
 
         false ->
-          Logger.info("[agent_worker] rejected topic=#{inspect(context.topic)}")
+          Logger.debug("[agent_worker] rejected topic=#{inspect(context.topic)}")
           {:stop, :worker_rejected}
       end
     end
 
     step :finalize do
       result = "Finalized result for #{context.topic}"
-      Logger.info("[agent_worker] completed topic=#{inspect(context.topic)}")
+      Logger.debug("[agent_worker] completed topic=#{inspect(context.topic)}")
       {:ok, %{worker_status: :completed, worker_result: result}}
     end
 
@@ -458,7 +458,9 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
         caller_agent_id: "demo.coordinator"
       }
 
-      Logger.info("[agent_coordinator] prepared caller_ctx user_id=#{user_id} topic=#{inspect(topic)}")
+      Logger.debug(
+        "[agent_coordinator] prepared caller_ctx user_id=#{user_id} topic=#{inspect(topic)}"
+      )
 
       {:ok,
        %{
@@ -472,7 +474,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
     step :invoke_worker do
       caller_ctx = context.coordinator_caller_ctx
 
-      Logger.info("[agent_coordinator] calling worker service=#{@worker_service_id}")
+      Logger.debug("[agent_coordinator] calling worker service=#{@worker_service_id}")
 
       case Synaptic.agent_call(
              @worker_service_id,
@@ -482,7 +484,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
              timeout: 5_000
            ) do
         {:ok, result} ->
-          Logger.info(
+          Logger.debug(
             "[agent_coordinator] worker started instance=#{result.handle.instance_id} " <>
               "task_ref=#{result.handle.task_ref_id} run=#{result.handle.run_id} status=#{inspect(result.snapshot.status)}"
           )
@@ -505,7 +507,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
     step :recover_worker_via_task_reference do
       caller_ctx = context.coordinator_caller_ctx
 
-      Logger.info(
+      Logger.debug(
         "[agent_coordinator] recovering worker via task ref query alias=#{context.alias_key} user=#{context.user_id}"
       )
 
@@ -522,7 +524,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
                %{action: :inspect},
                caller_ctx: caller_ctx
              ) do
-        Logger.info(
+        Logger.debug(
           "[agent_coordinator] recovered task_ref=#{task_ref.task_ref_id} " <>
             "instance=#{task_ref.instance_id} status=#{inspect(inspected.snapshot.status)}"
         )
@@ -543,7 +545,9 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
     step :resume_worker do
       caller_ctx = context.coordinator_caller_ctx
 
-      Logger.info("[agent_coordinator] resuming worker task_ref=#{context.recovered_task_ref_id}")
+      Logger.debug(
+        "[agent_coordinator] resuming worker task_ref=#{context.recovered_task_ref_id}"
+      )
 
       case Synaptic.agent_call(
              %{task_ref_id: context.recovered_task_ref_id},
@@ -555,7 +559,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
           final_status = resumed.snapshot.status
           worker_result = get_in(resumed, [:snapshot, :context, :worker_result])
 
-          Logger.info(
+          Logger.debug(
             "[agent_coordinator] worker resumed status=#{inspect(final_status)} result=#{inspect(worker_result)}"
           )
 
@@ -587,7 +591,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
         }
       }
 
-      Logger.info("[agent_coordinator] demo summary=#{inspect(summary)}")
+      Logger.debug("[agent_coordinator] demo summary=#{inspect(summary)}")
       {:ok, %{agent_demo_summary: summary}}
     end
 
@@ -606,7 +610,7 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
     @coordinator_service_id "demo.agent.coordinator"
 
     def register_demo_agent_services do
-      Logger.info("[agent_demo] registering services")
+      Logger.debug("[agent_demo] registering services")
 
       {:ok, _} =
         Synaptic.register_agent_service(
@@ -653,7 +657,9 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
 
       register_demo_agent_services()
 
-      Logger.info("[agent_demo] starting coordinator agent topic=#{inspect(topic)} user_id=#{user_id}")
+      Logger.debug(
+        "[agent_demo] starting coordinator agent topic=#{inspect(topic)} user_id=#{user_id}"
+      )
 
       result =
         Synaptic.agent_call(
@@ -669,12 +675,16 @@ if Code.ensure_loaded?(Mix) and Mix.env() == :dev do
           summary = get_in(response, [:snapshot, :context, :agent_demo_summary])
           coordinator_run_id = response.run_id
 
-          Logger.info("[agent_demo] coordinator run_id=#{inspect(coordinator_run_id)}")
-          Logger.info("[agent_demo] final coordinator snapshot status=#{inspect(response.snapshot.status)}")
-          Logger.info("[agent_demo] summary=#{inspect(summary)}")
+          Logger.debug("[agent_demo] coordinator run_id=#{inspect(coordinator_run_id)}")
+
+          Logger.debug(
+            "[agent_demo] final coordinator snapshot status=#{inspect(response.snapshot.status)}"
+          )
+
+          Logger.debug("[agent_demo] summary=#{inspect(summary)}")
 
           if summary do
-            Logger.info(
+            Logger.debug(
               "[agent_demo] worker artifacts instance=#{summary.worker.instance_id} " <>
                 "task_ref=#{summary.worker.task_ref_id} run=#{summary.worker.run_id} final=#{inspect(summary.worker.final_status)}"
             )

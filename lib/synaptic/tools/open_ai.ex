@@ -182,8 +182,12 @@ defmodule Synaptic.Tools.OpenAI do
 
   defp maybe_put_tools(body, opts) do
     case Keyword.get(opts, :tools) do
-      nil -> body
-      [] -> body
+      nil ->
+        body
+
+      [] ->
+        body
+
       tools ->
         body
         |> Map.put(:tools, tools)

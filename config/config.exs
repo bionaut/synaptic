@@ -8,13 +8,16 @@ config :synaptic, Synaptic.Tools.OpenAI,
   model: "gpt-4o-mini"
 
 config :synaptic, Synaptic.Voice,
-  default_voice_mode: :duplex,
-  stt_adapter: Synaptic.Voice.OpenAI.STTAdapter,
-  tts_adapter: Synaptic.Voice.OpenAI.TTSAdapter,
-  audio_format_default: %{encoding: :pcm16le, sample_rate_hz: 16_000, channels: 1}
+  default_mode: :duplex,
+  default_provider: :openai,
+  audio_format_default: %{encoding: :pcm16le, sample_rate_hz: 24_000, channels: 1}
 
-config :synaptic, Synaptic.Voice.Realtime,
-  model: "gpt-4o-realtime-preview",
+config :synaptic, Synaptic.Voice.Providers.OpenAI,
+  finch: Synaptic.Finch,
+  stt_model: "gpt-4o-mini-transcribe",
+  tts_model: "gpt-4o-mini-tts",
+  tts_audio_format: "pcm16",
+  realtime_model: "gpt-4o-realtime-preview",
   voice: "alloy",
   cancel_on_interrupt: true,
   workflow_timeout_ms: 30_000,
@@ -23,15 +26,21 @@ config :synaptic, Synaptic.Voice.Realtime,
     "Sure, I can look that up.",
     "Okay, give me a moment while I verify that."
   ],
-  sideband_adapter: Synaptic.Voice.OpenAI.RealtimeSideband
+  sideband_adapter: Synaptic.Voice.Providers.OpenAI.Realtime.Sideband
 
-config :synaptic, Synaptic.Voice.OpenAI,
+config :synaptic, Synaptic.Voice.Providers.Gemini,
   finch: Synaptic.Finch,
-  stt_model: "gpt-4o-mini-transcribe",
-  tts_model: "gpt-4o-mini-tts",
-  realtime_model: "gpt-4o-realtime-preview",
-  voice: "alloy",
-  audio_format: "mp3"
+  tts_model: "gemini-2.5-flash-preview-tts",
+  stt_model: "gemini-2.5-flash",
+  live_model: "gemini-2.5-flash-native-audio-preview",
+  voice: "Kore",
+  live_voice: "Kore"
+
+config :synaptic, Synaptic.Voice.Providers.ElevenLabs,
+  finch: Synaptic.Finch,
+  tts_model_id: "eleven_multilingual_v2",
+  stt_model_id: "scribe_v2",
+  tts_output_format: "pcm_24000"
 
 config :synaptic, Synaptic.Monitor,
   enabled: config_env() == :dev,

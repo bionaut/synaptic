@@ -1,5 +1,7 @@
-defmodule Synaptic.Voice.Realtime.SessionSupervisor do
-  @moduledoc false
+defmodule Synaptic.Voice.HeadlessSessionSupervisor do
+  @moduledoc """
+  DynamicSupervisor responsible for headless voice sessions.
+  """
 
   use DynamicSupervisor
 

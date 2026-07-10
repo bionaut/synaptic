@@ -29,8 +29,12 @@ defmodule Synaptic.AgentDirectoryTest do
         }
       )
 
-    assert {:error, :invisible} = AgentDirectory.lookup_service("search.private", caller_ctx: %{user_id: "u2"})
-    assert {:ok, service} = AgentDirectory.lookup_service("search.private", caller_ctx: %{user_id: "u1"})
+    assert {:error, :invisible} =
+             AgentDirectory.lookup_service("search.private", caller_ctx: %{user_id: "u2"})
+
+    assert {:ok, service} =
+             AgentDirectory.lookup_service("search.private", caller_ctx: %{user_id: "u1"})
+
     assert service.visibility == :private
   end
 
@@ -190,14 +194,18 @@ defmodule Synaptic.AgentDirectoryTest do
     first_activity = inst.last_activity_at
 
     assert {:ok, updated} =
-             AgentDirectory.update_instance("inst_1", %{status: :ready}, caller_ctx: %{user_id: "u1"})
+             AgentDirectory.update_instance("inst_1", %{status: :ready},
+               caller_ctx: %{user_id: "u1"}
+             )
 
     assert updated.status == :ready
 
     Process.sleep(5)
 
     assert {:ok, heartbeated} =
-             AgentDirectory.heartbeat_instance("inst_1", %{health: :healthy}, caller_ctx: %{user_id: "u1"})
+             AgentDirectory.heartbeat_instance("inst_1", %{health: :healthy},
+               caller_ctx: %{user_id: "u1"}
+             )
 
     assert heartbeated.health == :healthy
     assert DateTime.compare(heartbeated.last_activity_at, first_activity) in [:gt, :eq]
@@ -210,7 +218,9 @@ defmodule Synaptic.AgentDirectoryTest do
   end
 
   test "lookup_instance and lookup_task_reference return not_found for missing records" do
-    assert {:error, :not_found} = AgentDirectory.lookup_instance("missing", caller_ctx: %{user_id: "u1"})
+    assert {:error, :not_found} =
+             AgentDirectory.lookup_instance("missing", caller_ctx: %{user_id: "u1"})
+
     assert {:error, :not_found} = AgentDirectory.lookup_task_reference("missing")
   end
 end

@@ -29,7 +29,13 @@ defmodule Synaptic.MonitorTest do
     AgentDirectory.reset!()
 
     original_monitor = Application.get_env(:synaptic, Synaptic.Monitor)
-    Application.put_env(:synaptic, Synaptic.Monitor, enabled: true, history_limit: 5, retention_ms: 75, cleanup_interval_ms: 20)
+
+    Application.put_env(:synaptic, Synaptic.Monitor,
+      enabled: true,
+      history_limit: 5,
+      retention_ms: 75,
+      cleanup_interval_ms: 20
+    )
 
     start_supervised!(Synaptic.Monitor.Store)
     start_supervised!(Synaptic.Monitor.Bus)
@@ -53,7 +59,12 @@ defmodule Synaptic.MonitorTest do
 
     assert_eventually(fn ->
       events = Monitor.recent_events()
-      length(events) == 5 and Enum.all?(events, &(not String.ends_with?(&1.summary, "1") and not String.ends_with?(&1.summary, "2")))
+
+      length(events) == 5 and
+        Enum.all?(
+          events,
+          &(not String.ends_with?(&1.summary, "1") and not String.ends_with?(&1.summary, "2"))
+        )
     end)
   end
 
@@ -102,10 +113,26 @@ defmodule Synaptic.MonitorTest do
     assert_eventually(fn ->
       snapshot = Monitor.snapshot()
 
-      Enum.any?(snapshot.edges, &(&1.kind == :caller_callee and &1.from_id == "monitor.caller" and &1.to_id == "monitor.search")) and
-        Enum.any?(snapshot.edges, &(&1.kind == :service_instance and &1.from_id == "monitor.search" and &1.to_id == first.instance.instance_id)) and
-        Enum.any?(snapshot.edges, &(&1.kind == :instance_run and &1.from_id == first.instance.instance_id and &1.to_id == first.run_id)) and
-        Enum.any?(snapshot.edges, &(&1.kind == :task_ref_run and &1.from_id == first.task_reference.task_ref_id and &1.to_id == first.run_id)) and
+      Enum.any?(
+        snapshot.edges,
+        &(&1.kind == :caller_callee and &1.from_id == "monitor.caller" and
+            &1.to_id == "monitor.search")
+      ) and
+        Enum.any?(
+          snapshot.edges,
+          &(&1.kind == :service_instance and &1.from_id == "monitor.search" and
+              &1.to_id == first.instance.instance_id)
+        ) and
+        Enum.any?(
+          snapshot.edges,
+          &(&1.kind == :instance_run and &1.from_id == first.instance.instance_id and
+              &1.to_id == first.run_id)
+        ) and
+        Enum.any?(
+          snapshot.edges,
+          &(&1.kind == :task_ref_run and &1.from_id == first.task_reference.task_ref_id and
+              &1.to_id == first.run_id)
+        ) and
         Enum.all?(snapshot.edges, &is_binary(&1.id))
     end)
 
@@ -125,7 +152,9 @@ defmodule Synaptic.MonitorTest do
   end
 
   defp wait_for_run_status(run_id, status, attempts \\ 60)
-  defp wait_for_run_status(_run_id, _status, 0), do: flunk("monitor run did not reach desired status")
+
+  defp wait_for_run_status(_run_id, _status, 0),
+    do: flunk("monitor run did not reach desired status")
 
   defp wait_for_run_status(run_id, status, attempts) do
     case Monitor.entity(:run, run_id) do

@@ -50,6 +50,7 @@ defmodule Synaptic.MixProject do
     [
       {:phoenix_pubsub, "~> 2.1"},
       {:finch, "~> 0.13"},
+      {:websockex, "~> 0.4"},
       {:jason, "~> 1.2"},
       {:yaml_elixir, "~> 2.9"},
       {:phoenix, "~> 1.7", optional: true},

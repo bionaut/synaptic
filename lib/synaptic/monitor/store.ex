@@ -65,7 +65,9 @@ defmodule Synaptic.Monitor.Store do
       event_queue: :queue.new(),
       history_limit: Monitor.history_limit(),
       retention_ms: Monitor.retention_ms(),
-      cleanup_interval_ms: Application.get_env(:synaptic, Synaptic.Monitor, []) |> Keyword.get(:cleanup_interval_ms, 5_000)
+      cleanup_interval_ms:
+        Application.get_env(:synaptic, Synaptic.Monitor, [])
+        |> Keyword.get(:cleanup_interval_ms, 5_000)
     }
 
     schedule_cleanup(state.cleanup_interval_ms)
@@ -89,7 +91,11 @@ defmodule Synaptic.Monitor.Store do
   end
 
   defp create_tables do
-    Enum.each(Map.values(@entity_tables), &new_table(&1, [:set, :public, :named_table, read_concurrency: true]))
+    Enum.each(
+      Map.values(@entity_tables),
+      &new_table(&1, [:set, :public, :named_table, read_concurrency: true])
+    )
+
     new_table(@events_table, [:ordered_set, :public, :named_table, read_concurrency: true])
     new_table(@edges_table, [:set, :public, :named_table, read_concurrency: true])
     new_table(@meta_table, [:set, :public, :named_table, read_concurrency: true])
@@ -97,7 +103,9 @@ defmodule Synaptic.Monitor.Store do
 
   defp new_table(name, opts) do
     case :ets.info(name) do
-      :undefined -> :ets.new(name, opts)
+      :undefined ->
+        :ets.new(name, opts)
+
       _ ->
         :ets.delete_all_objects(name)
         :ok
@@ -134,109 +142,139 @@ defmodule Synaptic.Monitor.Store do
     maybe_upsert_run(event.run_id, event, now_ms)
 
     if event.workflow && should_upsert_workflow?(event) do
-      upsert_entity(:workflow, event.workflow, %{
-        workflow: event.workflow,
-        label: event.workflow,
-        status: event.status,
-        summary: event.summary
-      }, now_ms)
+      upsert_entity(
+        :workflow,
+        event.workflow,
+        %{
+          workflow: event.workflow,
+          label: event.workflow,
+          status: event.status,
+          summary: event.summary
+        },
+        now_ms
+      )
     end
   end
 
   defp maybe_upsert_service(nil, _event, _now_ms, _opts), do: :ok
 
   defp maybe_upsert_service(service_id, event, now_ms, opts) do
-    upsert_entity(:service, service_id, %{
-      service_id: service_id,
-      label: service_id,
-      status: service_status(event),
-      summary: event.summary,
-      synthetic: Keyword.get(opts, :synthetic, false),
-      metadata: filter_nil_fields(%{
-        capabilities: Map.get(event.data, :capabilities),
-        visibility: Map.get(event.data, :visibility),
-        kind: Map.get(event.data, :service_kind) || Map.get(event.data, :kind),
-        provider: Map.get(event.data, :provider),
-        provider_ref: Map.get(event.data, :provider_ref),
-        routing_mode: Map.get(event.data, :routing_mode),
-        lifecycle_mode: Map.get(event.data, :lifecycle_mode)
-      })
-    }, now_ms)
+    upsert_entity(
+      :service,
+      service_id,
+      %{
+        service_id: service_id,
+        label: service_id,
+        status: service_status(event),
+        summary: event.summary,
+        synthetic: Keyword.get(opts, :synthetic, false),
+        metadata:
+          filter_nil_fields(%{
+            capabilities: Map.get(event.data, :capabilities),
+            visibility: Map.get(event.data, :visibility),
+            kind: Map.get(event.data, :service_kind) || Map.get(event.data, :kind),
+            provider: Map.get(event.data, :provider),
+            provider_ref: Map.get(event.data, :provider_ref),
+            routing_mode: Map.get(event.data, :routing_mode),
+            lifecycle_mode: Map.get(event.data, :lifecycle_mode)
+          })
+      },
+      now_ms
+    )
   end
 
   defp maybe_upsert_instance(nil, _event, _now_ms), do: :ok
 
   defp maybe_upsert_instance(instance_id, event, now_ms) do
-    upsert_entity(:instance, instance_id, %{
-      instance_id: instance_id,
-      service_id: event.service_id || event.target_service_id,
-      run_id: event.run_id,
-      status: event.status,
-      summary: event.summary,
-      metadata: filter_nil_fields(%{
-        endpoint_type: Map.get(event.data, :endpoint_type),
-        endpoint_ref: Map.get(event.data, :endpoint_ref),
-        health: Map.get(event.data, :health),
-        last_error: Map.get(event.data, :last_error),
-        labels: Map.get(event.data, :labels),
-        purpose: event.purpose
-      })
-    }, now_ms)
+    upsert_entity(
+      :instance,
+      instance_id,
+      %{
+        instance_id: instance_id,
+        service_id: event.service_id || event.target_service_id,
+        run_id: event.run_id,
+        status: event.status,
+        summary: event.summary,
+        metadata:
+          filter_nil_fields(%{
+            endpoint_type: Map.get(event.data, :endpoint_type),
+            endpoint_ref: Map.get(event.data, :endpoint_ref),
+            health: Map.get(event.data, :health),
+            last_error: Map.get(event.data, :last_error),
+            labels: Map.get(event.data, :labels),
+            purpose: event.purpose
+          })
+      },
+      now_ms
+    )
   end
 
   defp maybe_upsert_task_ref(nil, _event, _now_ms), do: :ok
 
   defp maybe_upsert_task_ref(task_ref_id, event, now_ms) do
-    upsert_entity(:task_ref, task_ref_id, %{
-      task_ref_id: task_ref_id,
-      service_id: event.service_id || event.target_service_id,
-      instance_id: event.instance_id,
-      run_id: event.run_id,
-      status: event.status,
-      request_id: event.request_id,
-      purpose: event.purpose,
-      summary: event.summary,
-      metadata: filter_nil_fields(%{
-        user_id: Map.get(event.data, :user_id),
-        session_id: Map.get(event.data, :session_id),
-        alias_keys: Map.get(event.data, :alias_keys),
-        last_error: Map.get(event.data, :last_error)
-      })
-    }, now_ms)
+    upsert_entity(
+      :task_ref,
+      task_ref_id,
+      %{
+        task_ref_id: task_ref_id,
+        service_id: event.service_id || event.target_service_id,
+        instance_id: event.instance_id,
+        run_id: event.run_id,
+        status: event.status,
+        request_id: event.request_id,
+        purpose: event.purpose,
+        summary: event.summary,
+        metadata:
+          filter_nil_fields(%{
+            user_id: Map.get(event.data, :user_id),
+            session_id: Map.get(event.data, :session_id),
+            alias_keys: Map.get(event.data, :alias_keys),
+            last_error: Map.get(event.data, :last_error)
+          })
+      },
+      now_ms
+    )
   end
 
   defp maybe_upsert_run(nil, _event, _now_ms), do: :ok
 
   defp maybe_upsert_run(run_id, event, now_ms) do
-    upsert_entity(:run, run_id, %{
-      run_id: run_id,
-      workflow: event.workflow,
-      service_id: event.service_id || event.target_service_id,
-      instance_id: event.instance_id,
-      task_ref_id: event.task_ref_id,
-      step: event.step,
-      status: event.status,
-      request_id: event.request_id,
-      purpose: event.purpose,
-      trace_id: event.trace_id,
-      call_id: event.call_id,
-      parent_call_id: event.parent_call_id,
-      summary: event.summary,
-      last_error: Map.get(event.data, :last_error),
-      waiting: Map.get(event.data, :waiting),
-      metrics: filter_nil_fields(%{
-        duration_ms: Map.get(event.data, :duration_ms),
-        prompt_tokens: Map.get(event.data, :prompt_tokens),
-        completion_tokens: Map.get(event.data, :completion_tokens),
-        total_tokens: Map.get(event.data, :total_tokens),
-        estimated_cost_usd: Map.get(event.data, :estimated_cost_usd)
-      }),
-      metadata: filter_nil_fields(%{
-        current_step: Map.get(event.data, :current_step),
-        event: Map.get(event.data, :event),
-        run_source: Map.get(event.data, :run_source)
-      })
-    }, now_ms)
+    upsert_entity(
+      :run,
+      run_id,
+      %{
+        run_id: run_id,
+        workflow: event.workflow,
+        service_id: event.service_id || event.target_service_id,
+        instance_id: event.instance_id,
+        task_ref_id: event.task_ref_id,
+        step: event.step,
+        status: event.status,
+        request_id: event.request_id,
+        purpose: event.purpose,
+        trace_id: event.trace_id,
+        call_id: event.call_id,
+        parent_call_id: event.parent_call_id,
+        summary: event.summary,
+        last_error: Map.get(event.data, :last_error),
+        waiting: Map.get(event.data, :waiting),
+        metrics:
+          filter_nil_fields(%{
+            duration_ms: Map.get(event.data, :duration_ms),
+            prompt_tokens: Map.get(event.data, :prompt_tokens),
+            completion_tokens: Map.get(event.data, :completion_tokens),
+            total_tokens: Map.get(event.data, :total_tokens),
+            estimated_cost_usd: Map.get(event.data, :estimated_cost_usd)
+          }),
+        metadata:
+          filter_nil_fields(%{
+            current_step: Map.get(event.data, :current_step),
+            event: Map.get(event.data, :event),
+            run_source: Map.get(event.data, :run_source)
+          })
+      },
+      now_ms
+    )
   end
 
   defp upsert_entity(type, id, attrs, now_ms) do
@@ -257,15 +295,47 @@ defmodule Synaptic.Monitor.Store do
   end
 
   defp upsert_edges(event, now_ms) do
-    maybe_upsert_edge(:service_instance, {:service, event.service_id}, {:instance, event.instance_id}, event, now_ms)
-    maybe_upsert_edge(:instance_run, {:instance, event.instance_id}, {:run, event.run_id}, event, now_ms)
-    maybe_upsert_edge(:task_ref_run, {:task_ref, event.task_ref_id}, {:run, event.run_id}, event, now_ms)
+    maybe_upsert_edge(
+      :service_instance,
+      {:service, event.service_id},
+      {:instance, event.instance_id},
+      event,
+      now_ms
+    )
+
+    maybe_upsert_edge(
+      :instance_run,
+      {:instance, event.instance_id},
+      {:run, event.run_id},
+      event,
+      now_ms
+    )
+
+    maybe_upsert_edge(
+      :task_ref_run,
+      {:task_ref, event.task_ref_id},
+      {:run, event.run_id},
+      event,
+      now_ms
+    )
 
     if should_upsert_workflow?(event) do
-      maybe_upsert_edge(:workflow_run, {:workflow, event.workflow}, {:run, event.run_id}, event, now_ms)
+      maybe_upsert_edge(
+        :workflow_run,
+        {:workflow, event.workflow},
+        {:run, event.run_id},
+        event,
+        now_ms
+      )
     end
 
-    maybe_upsert_edge(:caller_callee, {:service, event.caller_agent_id}, {:service, event.target_service_id}, event, now_ms)
+    maybe_upsert_edge(
+      :caller_callee,
+      {:service, event.caller_agent_id},
+      {:service, event.target_service_id},
+      event,
+      now_ms
+    )
   end
 
   defp maybe_upsert_edge(_kind, {_from_type, nil}, _to, _event, _now_ms), do: :ok
@@ -278,8 +348,15 @@ defmodule Synaptic.Monitor.Store do
 
     existing =
       case :ets.lookup(@edges_table, edge_key) do
-        [{^edge_key, edge}] -> edge
-        [] -> %{id: edge_public_id(kind, normalized_from_id, normalized_to_id), kind: kind, inserted_at_ms: now_ms}
+        [{^edge_key, edge}] ->
+          edge
+
+        [] ->
+          %{
+            id: edge_public_id(kind, normalized_from_id, normalized_to_id),
+            kind: kind,
+            inserted_at_ms: now_ms
+          }
       end
 
     edge =

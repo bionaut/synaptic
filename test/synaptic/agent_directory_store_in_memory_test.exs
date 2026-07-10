@@ -24,16 +24,30 @@ defmodule Synaptic.AgentDirectoryStoreInMemoryTest do
   end
 
   test "instance update and filtering by status list" do
-    inst = %{tenant_id: "default", instance_id: "inst1", service_id: "svc", status: :ready, user_id: "u1"}
+    inst = %{
+      tenant_id: "default",
+      instance_id: "inst1",
+      service_id: "svc",
+      status: :ready,
+      user_id: "u1"
+    }
+
     assert {:ok, _} = InMemory.put_instance(inst)
 
     assert {:ok, updated} =
-             InMemory.update_instance("default", "inst1", fn rec -> Map.put(rec, :status, :running) end)
+             InMemory.update_instance("default", "inst1", fn rec ->
+               Map.put(rec, :status, :running)
+             end)
 
     assert updated.status == :running
     assert :error = InMemory.update_instance("default", "missing", & &1)
 
-    assert [one] = InMemory.list_instances(%{tenant_id: "default", status: [:running, :waiting_for_human]})
+    assert [one] =
+             InMemory.list_instances(%{
+               tenant_id: "default",
+               status: [:running, :waiting_for_human]
+             })
+
     assert one.instance_id == "inst1"
   end
 
@@ -68,7 +82,9 @@ defmodule Synaptic.AgentDirectoryStoreInMemoryTest do
     assert only.task_ref_id == "task1"
 
     assert {:ok, changed} =
-             InMemory.update_task_reference("default", "task1", fn rec -> Map.put(rec, :status, :completed) end)
+             InMemory.update_task_reference("default", "task1", fn rec ->
+               Map.put(rec, :status, :completed)
+             end)
 
     assert changed.status == :completed
     assert :ok = InMemory.delete_task_reference("default", "task1")
@@ -77,7 +93,13 @@ defmodule Synaptic.AgentDirectoryStoreInMemoryTest do
 
   test "reset clears all record types" do
     assert {:ok, _} = InMemory.put_service(%{tenant_id: "default", service_id: "svc"})
-    assert {:ok, _} = InMemory.put_instance(%{tenant_id: "default", instance_id: "inst", service_id: "svc"})
+
+    assert {:ok, _} =
+             InMemory.put_instance(%{
+               tenant_id: "default",
+               instance_id: "inst",
+               service_id: "svc"
+             })
 
     assert {:ok, _} =
              InMemory.put_task_reference(%{

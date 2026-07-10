@@ -4,12 +4,40 @@ This guide documents Synaptic's voice subsystem and **principles for building re
 
 ---
 
+## Mode-specific setup playbooks
+
+For implementation-grade, step-by-step setup instructions by mode:
+
+- Duplex: [`docs/voice_modes/duplex_setup.md`](docs/voice_modes/duplex_setup.md)
+- Turn-based: [`docs/voice_modes/turn_based_setup.md`](docs/voice_modes/turn_based_setup.md)
+- Realtime: [`docs/voice_modes/realtime_setup.md`](docs/voice_modes/realtime_setup.md)
+
+---
+
+## Frontend setup playbooks
+
+For frontend-only integration details (event wiring, UI states, recorder/playback controls):
+
+- Duplex frontend: [`docs/voice_frontend/duplex_frontend_setup.md`](docs/voice_frontend/duplex_frontend_setup.md)
+- Turn-based frontend: [`docs/voice_frontend/turn_based_frontend_setup.md`](docs/voice_frontend/turn_based_frontend_setup.md)
+- Realtime frontend: [`docs/voice_frontend/realtime_frontend_setup.md`](docs/voice_frontend/realtime_frontend_setup.md)
+
+---
+
 ## What the framework provides
 
-- **Headless voice** (`Synaptic.Voice`): session process bound to a workflow run; you push audio or text, call `end_turn`, and consume events. You own STT/TTS transport (e.g. your own WebSocket).
-- **Realtime voice** (`Synaptic.Voice.Realtime`): session process where the **provider** (e.g. OpenAI) handles media over WebRTC; Synaptic orchestrates workflow per turn and injects response instructions. Audio flows client ↔ provider; control and transcripts flow client ↔ your server ↔ Synaptic.
+`Synaptic.Voice` is the only public voice API.
 
-Choose **Realtime** when you want low-latency duplex “voice assistant” UX with provider-managed audio. Choose **Headless** when you want to own the full audio path and transport.
+- **Headless voice**: `mode: :turn_based` or `mode: :duplex`. Synaptic owns the session process; you push audio or text, call `end_turn`, and consume normalized events.
+- **Realtime voice**: `mode: :realtime` with provider-specific transport semantics:
+  - OpenAI: client-direct WebRTC + server sideband orchestration
+  - Gemini: server-relay WebSocket (client talks to your app, app talks to Gemini Live)
+
+Provider selection is per session with `provider: :openai | :gemini | :eleven_labs`
+for headless voice and `provider: :openai | :gemini` for realtime. Public mixed
+stacks are rejected.
+
+Choose `:realtime` when you want low-latency conversational transport. Choose `:turn_based` or `:duplex` when you want explicit turn control and direct STT/TTS orchestration.
 
 ---
 
@@ -27,18 +55,29 @@ Add `synaptic` to your project. Synaptic’s application starts its own PubSub, 
 # Tools (for workflow LLM calls)
 config :synaptic, Synaptic.Tools.OpenAI, model: "gpt-4o-mini"
 
-# Voice: STT/TTS adapters (headless); realtime uses the provider’s Realtime API
 config :synaptic, Synaptic.Voice,
-  default_voice_mode: :duplex,
-  stt_adapter: Synaptic.Voice.OpenAI.STTAdapter,
-  tts_adapter: Synaptic.Voice.OpenAI.TTSAdapter
+  default_mode: :duplex,
+  default_provider: :openai,
+  audio_format_default: %{encoding: :pcm16le, sample_rate_hz: 24_000, channels: 1}
 
-# Voice OpenAI: models and formats
-config :synaptic, Synaptic.Voice.OpenAI,
-  tts_model: "gpt-4o-mini-tts",
+config :synaptic, Synaptic.Voice.Providers.OpenAI,
   stt_model: "gpt-4o-mini-transcribe",
+  tts_model: "gpt-4o-mini-tts",
+  tts_audio_format: "pcm16",
   realtime_model: "gpt-4o-realtime-preview",
   voice: "alloy"
+
+config :synaptic, Synaptic.Voice.Providers.Gemini,
+  stt_model: "gemini-2.5-flash",
+  tts_model: "gemini-2.5-flash-preview-tts",
+  live_model: "gemini-2.5-flash-native-audio-preview",
+  voice: "Kore",
+  live_voice: "Kore"
+
+config :synaptic, Synaptic.Voice.Providers.ElevenLabs,
+  tts_model_id: "eleven_multilingual_v2",
+  stt_model_id: "scribe_v2",
+  tts_output_format: "pcm_24000"
 ```
 
 **Runtime / secrets** (e.g. `config/runtime.exs`):
@@ -46,53 +85,46 @@ config :synaptic, Synaptic.Voice.OpenAI,
 ```elixir
 if api_key = System.get_env("OPENAI_API_KEY") do
   config :synaptic, Synaptic.Tools.OpenAI, api_key: api_key
-  config :synaptic, Synaptic.Voice.OpenAI, api_key: api_key
+  config :synaptic, Synaptic.Voice.Providers.OpenAI, api_key: api_key
+end
+
+if gemini_api_key = System.get_env("GEMINI_API_KEY") do
+  config :synaptic, Synaptic.Voice.Providers.Gemini, api_key: gemini_api_key
+end
+
+if elevenlabs_api_key = System.get_env("ELEVENLABS_API_KEY") do
+  config :synaptic, Synaptic.Voice.Providers.ElevenLabs, api_key: elevenlabs_api_key
 end
 ```
 
 ---
 
-## Principles for real-time voice (provider WebRTC)
+## Principles for realtime voice
 
-When the client talks to the provider (e.g. OpenAI) over WebRTC and Synaptic orchestrates per turn, follow these principles.
+Realtime has two provider patterns:
 
-### 1. Split responsibilities clearly
+- **OpenAI realtime**: client talks directly to provider over WebRTC; server orchestrates through sideband.
+- **Gemini realtime**: server holds the Live WebSocket; client audio/text is relayed through your app.
 
-- **Audio**: client ↔ provider (WebRTC). The framework does not sit in the audio path.
-- **Orchestration**: your server creates a Synaptic run and a realtime session, then a **sideband** process subscribes to the run and session, reacts to final transcripts, runs the workflow, and sends response instructions to the provider.
-- **Event relay**: the client sends selected provider events (e.g. transcript completed, response done) to your server; the server feeds them into the session via `Realtime.ingest_provider_event/2`. The server receives `:provider_outbound` events from Synaptic and pushes those payloads to the client so the client can send them over the provider’s data channel.
+Create sessions with:
 
-So: **one HTTP call to create a session and get a bootstrap** (session_id, run_id, provider credentials/model); then **WebRTC + data channel** for media and control, with your server relaying provider events into Synaptic and Synaptic pushing outbound instructions back to the client.
+```elixir
+Synaptic.Voice.start_session(MyWorkflow, %{}, provider: :openai, mode: :realtime)
+Synaptic.Voice.start_session(MyWorkflow, %{}, provider: :gemini, mode: :realtime)
+```
 
-### 2. Server: session creation and response shape
+Use `transport` from the return payload to bootstrap client behavior:
 
-- Expose an HTTP endpoint (e.g. `POST /api/realtime/session`) that:
-  - Calls `Synaptic.Voice.Realtime.start_session(workflow_module, initial_input, opts)`.
-  - Returns JSON the client needs to establish WebRTC with the provider.
-- The client must receive at least:
-  - `session_id`, `run_id` (to tag events and subscribe).
-  - A bootstrap (e.g. `realtime`) with whatever the provider needs for the SDP handshake—typically a **client secret** (Bearer token) and **model** name for the provider’s realtime endpoint (e.g. `https://api.openai.com/v1/realtime?model=...`).
-- Use session options to match your product: e.g. `keep_alive: true`, `preferred_language`, `backchannel_enabled`, `backchannel_phrases`, `suppress_provider_responses_during_workflow: true` so the provider does not answer on its own.
+- OpenAI transport includes provider bootstrap fields like `client_secret`, `expires_at`, `model`, `voice`.
+- Gemini transport describes relay expectations (`audio_config`) and does not expose provider credentials to clients.
 
-### 3. Server: lifecycle and event relay
+### Realtime operation matrix
 
-- When the client reports that it has a session (e.g. after receiving your JSON), subscribe to the session with `Realtime.subscribe_session(session_id)` and to the run with `Synaptic.subscribe(run_id)` so you can react to workflow and voice events.
-- When the client’s WebRTC/data channel is ready, call `Realtime.client_connected(session_id)` so the sideband knows it can send instructions. On disconnect, call `Realtime.client_disconnected(session_id)`.
-- For every provider event that matters for orchestration (e.g. final transcript, response created/done, errors), have the client send a compact payload to your server; your server calls `Realtime.ingest_provider_event(session_id, payload)`. Synaptic will then drive workflow and outbound instructions.
-- When you receive `{:synaptic_voice_realtime_event, %{event: :provider_outbound, data: %{event: outbound}}}` from PubSub, push that `outbound` payload to the client so it can send it on the provider’s data channel (e.g. `dataChannel.send(JSON.stringify(outbound))`).
-- On user disconnect or session end: unsubscribe from session and run, call `Realtime.stop_session(session_id, reason)`, and signal the client to tear down WebRTC so state stays consistent.
+- OpenAI realtime supports: `client_connected/2`, `client_disconnected/2`, `ingest_provider_event/2`.
+- Gemini realtime supports: `push_audio/3`, `push_text/3`, `end_turn/2`, `cancel_output/1`.
+- Unsupported operations return `{:error, :unsupported_for_mode}`.
 
-### 4. Client: WebRTC and data channel
-
-- **Bootstrap**: POST to your session endpoint (e.g. with language or other preferences); get `session_id`, `run_id`, and the provider bootstrap (client_secret, model).
-- **WebRTC**: Create a peer connection, add the microphone track, create the provider’s data channel (e.g. `"oai-events"`). Create an offer, POST the SDP to the provider’s realtime URL with the bootstrap token and model, set the remote description from the answer, and attach the remote stream to an audio element for playback.
-- **Control the provider**: As soon as the data channel is open, send a `session.update` (or equivalent) so that:
-  - Turn detection is server-driven (e.g. `server_vad`) and the provider does **not** create responses on its own (`create_response: false`), and optionally allows interruption (`interrupt_response: true`).
-  - Instructions tell the model to wait for server-side orchestration and never answer autonomously.
-- **Event relay**: On `dataChannel.onmessage`, parse JSON and filter to the event types your server needs. Send each to your server (e.g. via your existing transport—WebSocket, LiveView push, etc.) with `session_id` and a compact payload so the server can call `ingest_provider_event`. When your server pushes an outbound event (the payload Synaptic wants sent to the provider), send it with `dataChannel.send(JSON.stringify(event))`.
-- **Cleanup**: On disconnect or when the server signals session end, close the data channel and peer connection and stop microphone tracks.
-
-### 5. Workflow design for realtime
+### Workflow design for realtime
 
 - The realtime sideband resumes the workflow with the **final user transcript**. The default mapping sends `%{human_input_text: transcript}` (or `%{answer: transcript}` if the suspended step’s `resume_schema` has `:answer`).
 - Design your workflow so that the first step that needs user speech has `suspend: true` and `resume_schema: %{human_input_text: :string}` (or `answer: :string`). When the step runs after resume, read from `context[:human_input][:human_input_text]` or `context[:human_input][:answer]` (or fallback to `context.human_input_text` / `context.answer`) and put the result into context (e.g. `query`).
@@ -105,21 +137,23 @@ So: **one HTTP call to create a session and get a bootstrap** (session_id, run_i
 
 | Function | Purpose |
 |----------|---------|
-| `Realtime.start_session(workflow_module, input, opts)` | Start a run and realtime session; return payload for the client (session_id, run_id, realtime bootstrap). |
-| `Realtime.subscribe_session(session_id)` | Subscribe to session events (`{:synaptic_voice_realtime_event, envelope}`). |
-| `Realtime.unsubscribe_session(session_id)` | Unsubscribe. |
-| `Realtime.client_connected(session_id)` | Notify that the client’s WebRTC/data channel is up. |
-| `Realtime.client_disconnected(session_id)` | Notify that the client disconnected. |
-| `Realtime.ingest_provider_event(session_id, payload)` | Feed a provider event from the client into the session. |
-| `Realtime.stop_session(session_id, reason)` | Stop the session. |
+| `Synaptic.Voice.start_session(workflow_module, input, provider: :openai | :gemini, mode: :realtime, ...)` | Start a run and realtime session; return payload for the client. |
+| `Synaptic.Voice.subscribe_session(session_id)` | Subscribe to session events (`{:synaptic_voice_event, envelope}`). |
+| `Synaptic.Voice.unsubscribe_session(session_id)` | Unsubscribe. |
+| `Synaptic.Voice.client_connected(session_id)` | OpenAI realtime only. |
+| `Synaptic.Voice.client_disconnected(session_id)` | OpenAI realtime only. |
+| `Synaptic.Voice.ingest_provider_event(session_id, payload)` | OpenAI realtime only. |
+| `Synaptic.Voice.push_audio(session_id, chunk)` | Headless and Gemini realtime. |
+| `Synaptic.Voice.push_text(session_id, text)` | Headless and Gemini realtime. |
+| `Synaptic.Voice.stop_session(session_id, reason)` | Stop the session. |
 
 ---
 
 ## Realtime session events (PubSub)
 
-Subscribe with `Synaptic.Voice.Realtime.subscribe_session(session_id)`. Events are broadcast on topic `"synaptic:voice:realtime:session:" <> session_id` as:
+Subscribe with `Synaptic.Voice.subscribe_session(session_id)`. All voice modes publish on topic `"synaptic:voice:session:" <> session_id` as:
 
-`{:synaptic_voice_realtime_event, envelope}`
+`{:synaptic_voice_event, envelope}`
 
 Envelope fields include: `:event`, `:data`, `:session_id`, `:run_id`, `:seq`, `:ts_ms`.
 
@@ -139,18 +173,21 @@ Use these to drive UI (status, transcripts) and to relay `:provider_outbound` to
 
 When you own the transport (e.g. your own WebSocket) and want Synaptic to run STT/TTS and workflows:
 
-- **Start or attach**: `Synaptic.Voice.start_session(workflow_module, input, opts)` starts a run and session; `attach_run(run_id, opts)` attaches a session to an existing run.
+- **Start or attach**: `Synaptic.Voice.start_session(workflow_module, input, opts)` starts a run and session; `attach_run(run_id, opts)` attaches a session to an existing run. Both return `{:ok, %{session_id, run_id, mode, stack, transport}}`.
+- **Provider bundle**: pass `provider: :openai | :gemini | :eleven_labs`. Router derives pure stacks internally; public `stack` is rejected unless `_allow_custom_stack: true` (internal/tests).
 - **Input**: Stream audio with `push_audio(session_id, chunk, opts)` and/or send text with `push_text(session_id, text, opts)`. When the user turn is complete, call `end_turn(session_id, opts)` so STT finalizes (if applicable) and the run resumes with the transcript.
-- **Output**: Subscribe with `Synaptic.Voice.subscribe_session(session_id)`; events arrive on topic `"synaptic:voice:session:" <> session_id` as `{:synaptic_voice_event, envelope}`. Use `:assistant_text_chunk`, `:assistant_audio_chunk`, etc., to drive your TTS or playback and UI.
+- **Output**: Subscribe with `Synaptic.Voice.subscribe_session(session_id)`; events arrive on topic `"synaptic:voice:session:" <> session_id` as `{:synaptic_voice_event, envelope}`. Use `:assistant_text_chunk`, `:assistant_audio_chunk`, etc., to drive your playback and UI. Built-in headless providers now default to one TTS generation per assistant turn for more consistent tone; segmented TTS remains the fallback for adapters without capability metadata.
 - **Interruption**: In duplex mode, call `cancel_output(session_id)` when the user interrupts; the framework emits `:duplex_interruption` and transitions back to listening.
 - **Resume mapping**: By default, the transcript is sent as `%{human_input_text: transcript}` or `%{answer: transcript}` depending on the step’s `resume_schema`. Override with `resume_mapper: fn transcript, state -> payload end` in session options.
+- **Unsupported operations**: functions that do not make sense for provider+mode return `{:error, :unsupported_for_mode}`.
 - **Cleanup**: Call `Synaptic.Voice.stop_session(session_id, reason)` and unsubscribe when the session ends.
 
 ---
 
 ## Headless: modules and event envelope
 
-- **Modules**: `Synaptic.Voice` (API), `Synaptic.Voice.Session`, `Synaptic.Voice.Registry`, `Synaptic.Voice.SessionSupervisor`, `Synaptic.Voice.Event`, `Synaptic.Voice.TextSegmenter`; adapters: `STTAdapter`, `TTSAdapter`; OpenAI: `OpenAI.STTAdapter`, `OpenAI.TTSAdapter`, `OpenAI.WSHelper`, `OpenAI.WebRTCHelper`.
+- **Modules**: `Synaptic.Voice` (API), `Synaptic.Voice.Router`, `Synaptic.Voice.SessionRegistry`, `Synaptic.Voice.HeadlessSessionSupervisor`, `Synaptic.Voice.RealtimeSessionSupervisor`, `Synaptic.Voice.Event`, `Synaptic.Voice.TextSegmenter`; engines: `Synaptic.Voice.Sessions.Headless`, `Synaptic.Voice.Sessions.Realtime.OpenAI`, `Synaptic.Voice.Sessions.Realtime.Gemini`; providers: `Synaptic.Voice.Providers.OpenAI.*`, `Synaptic.Voice.Providers.Gemini.*`, `Synaptic.Voice.Providers.ElevenLabs.*`.
+- **Headless output strategies**: headless sessions select an internal TTS strategy from provider capability metadata. Current strategies are `:segmented_batch`, `:single_shot`, and reserved `:streaming`.
 - **Envelope**: guaranteed fields `:v`, `:session_id`, `:run_id`, `:seq`, `:ts_ms`, `:event`, `:data`.
 - **Event names**: `:turn_started`, `:input_partial_text`, `:input_final_text`, `:assistant_text_chunk`, `:assistant_text_done`, `:assistant_audio_chunk`, `:assistant_audio_done`, `:duplex_interruption`, `:duplex_state_changed`, `:session_error`, `:session_stopped`.
 
@@ -158,27 +195,11 @@ When you own the transport (e.g. your own WebSocket) and want Synaptic to run ST
 
 ## Configuration reference
 
-```elixir
-# config/config.exs
-config :synaptic, Synaptic.Voice,
-  default_voice_mode: :duplex,
-  stt_adapter: Synaptic.Voice.OpenAI.STTAdapter,
-  tts_adapter: Synaptic.Voice.OpenAI.TTSAdapter,
-  audio_format_default: %{encoding: :pcm16le, sample_rate_hz: 16_000, channels: 1}
+Defaults are:
 
-config :synaptic, Synaptic.Voice.OpenAI,
-  finch: Synaptic.Finch,
-  stt_model: "gpt-4o-mini-transcribe",
-  tts_model: "gpt-4o-mini-tts",
-  realtime_model: "gpt-4o-realtime-preview",
-  voice: "alloy"
-```
-
-```elixir
-# config/runtime.exs
-config :synaptic, Synaptic.Voice.OpenAI,
-  api_key: System.fetch_env!("OPENAI_API_KEY")
-```
+- `default_mode: :duplex`
+- `default_provider: :openai`
+- `audio_format_default: %{encoding: :pcm16le, sample_rate_hz: 24_000, channels: 1}`
 
 ---
 
@@ -200,17 +221,17 @@ config :synaptic, Synaptic.Voice.OpenAI,
 
 - No built-in UI or client transport; your app provides both.
 - Headless OpenAI STT batches audio and transcribes on `end_turn`; partials can be simulated via `push_audio(..., partial_text: ...)`.
-- TTS emits segments; playback is your responsibility.
-- Realtime behavior depends on the provider’s WebRTC and your configured model; provider payloads may evolve—adapters and config are the extension points.
+- TTS playback is your responsibility. Depending on provider capabilities, headless voice may synthesize per segment or once per assistant turn.
+- Realtime behavior is provider-specific: OpenAI uses client-direct WebRTC + sideband; Gemini uses server-relay Live WebSocket.
 
 ---
 
 ## Extending to another provider
 
-Implement the behaviours:
+Implement the headless behaviours:
 
 - `Synaptic.Voice.STTAdapter`
 - `Synaptic.Voice.TTSAdapter`
-- Optionally `Synaptic.Voice.TransportHelper`
 
-Then point config at your adapters. No workflow DSL changes are required.
+Realtime is not provider-neutral: OpenAI and Gemini each use dedicated engines, and
+`provider: :eleven_labs` is headless-only.

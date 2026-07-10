@@ -122,7 +122,9 @@ defmodule Synaptic.MCP.Adapters.HTTP do
     body = Jason.encode!(%{jsonrpc: "2.0", id: request_id(), method: method, params: params})
     request = Finch.build(:post, endpoint(connection), headers, body)
 
-    case Finch.request(request, finch(connection, opts), receive_timeout: receive_timeout(connection, opts)) do
+    case Finch.request(request, finch(connection, opts),
+           receive_timeout: receive_timeout(connection, opts)
+         ) do
       {:ok, %Finch.Response{status: status, body: response_body, headers: resp_headers}}
       when status in [200, 202] ->
         session_id = get_header(resp_headers, @mcp_session_header)

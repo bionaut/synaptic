@@ -8,7 +8,8 @@ defmodule Synaptic.AgentPolicy do
   @type invocation :: map()
 
   @callback authorize_discovery(caller_ctx(), record(), atom()) :: :allow | {:deny, term()}
-  @callback authorize_invoke(caller_ctx(), term(), record(), invocation()) :: :allow | {:deny, term()}
+  @callback authorize_invoke(caller_ctx(), term(), record(), invocation()) ::
+              :allow | {:deny, term()}
   @callback filter_visible_records(caller_ctx(), [record()]) :: [record()]
   @callback scope_defaults(caller_ctx()) :: map()
 

@@ -1,16 +1,13 @@
-defmodule Synaptic.Voice.OpenAI.STTAdapter do
+defmodule Synaptic.Voice.Providers.OpenAI.STTAdapter do
   @moduledoc """
   OpenAI-oriented STT adapter with an OpenAI-compatible JSON transcription request.
-
-  The adapter accepts streamed audio chunks and sends final transcript events to
-  the owning session.
   """
 
   use GenServer
 
   @behaviour Synaptic.Voice.STTAdapter
 
-  alias Synaptic.Voice.OpenAI
+  alias Synaptic.Voice.Providers.OpenAI
 
   @default_endpoint "https://api.openai.com/v1/audio/transcriptions"
 
@@ -46,7 +43,7 @@ defmodule Synaptic.Voice.OpenAI.STTAdapter do
        owner: owner,
        opts: opts,
        chunks: [],
-       format: %{encoding: :pcm16le, sample_rate_hz: 16_000, channels: 1}
+       format: %{encoding: :pcm16le, sample_rate_hz: 24_000, channels: 1}
      }}
   end
 
@@ -67,25 +64,31 @@ defmodule Synaptic.Voice.OpenAI.STTAdapter do
     merged_opts = Keyword.merge(state.opts, opts)
     meta = final_meta(state.format, bytes)
 
-    case request_transcription(bytes, state.format, merged_opts) do
-      {:ok, transcript} ->
-        text = String.trim(transcript)
+    if bytes == "" do
+      send(state.owner, {:synaptic_voice, :stt_error, {:empty_transcript, meta}})
+    else
+      case request_transcription(bytes, state.format, merged_opts) do
+        {:ok, transcript} ->
+          text = String.trim(transcript)
 
-        if text == "" do
-          send(state.owner, {:synaptic_voice, :stt_error, {:empty_transcript, meta}})
-        else
-          send(state.owner, {:synaptic_voice, :stt_final, text, meta})
-        end
+          if text == "" do
+            send(state.owner, {:synaptic_voice, :stt_error, {:empty_transcript, meta}})
+          else
+            send(state.owner, {:synaptic_voice, :stt_final, text, meta})
+          end
 
-      {:error, reason} ->
-        send(state.owner, {:synaptic_voice, :stt_error, {:transcription_failed, reason, meta}})
+        {:error, reason} ->
+          send(state.owner, {:synaptic_voice, :stt_error, {:transcription_failed, reason, meta}})
+      end
     end
 
     {:noreply, %{state | chunks: []}}
   end
 
   defp request_transcription(bytes, format, opts) do
-    model = Keyword.get(opts, :stt_model, OpenAI.config(opts)[:stt_model] || "gpt-4o-mini-transcribe")
+    model =
+      Keyword.get(opts, :stt_model, OpenAI.config(opts)[:stt_model] || "gpt-4o-mini-transcribe")
+
     filename = "audio" <> file_extension(format)
     content_type = content_type(format)
     boundary = "synaptic_voice_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
@@ -96,7 +99,6 @@ defmodule Synaptic.Voice.OpenAI.STTAdapter do
     ]
 
     body = multipart_body(boundary, model, filename, content_type, bytes)
-
     request = Finch.build(:post, endpoint(opts), headers, body)
 
     case Finch.request(request, OpenAI.finch(opts)) do
@@ -133,14 +135,14 @@ defmodule Synaptic.Voice.OpenAI.STTAdapter do
       "audio/mpeg" -> ".mp3"
       "audio/wav" -> ".wav"
       "audio/x-wav" -> ".wav"
-      _ -> ".webm"
+      _ -> ".wav"
     end
   end
 
   defp file_extension(_), do: ".wav"
 
   defp content_type(%{mime: mime}) when is_binary(mime), do: normalize_mime(mime)
-  defp content_type(_), do: "audio/webm"
+  defp content_type(_), do: "audio/wav"
 
   defp normalize_mime(mime) when is_binary(mime) do
     mime
@@ -152,16 +154,29 @@ defmodule Synaptic.Voice.OpenAI.STTAdapter do
 
   defp multipart_body(boundary, model, filename, content_type, bytes) do
     [
-      "--", boundary, "\r\n",
+      "--",
+      boundary,
+      "\r\n",
       "Content-Disposition: form-data; name=\"model\"\r\n\r\n",
-      model, "\r\n",
-      "--", boundary, "\r\n",
-      "Content-Disposition: form-data; name=\"file\"; filename=\"", filename, "\"\r\n",
-      "Content-Type: ", content_type, "\r\n\r\n",
-      bytes, "\r\n",
-      "--", boundary, "--\r\n"
+      model,
+      "\r\n",
+      "--",
+      boundary,
+      "\r\n",
+      "Content-Disposition: form-data; name=\"file\"; filename=\"",
+      filename,
+      "\"\r\n",
+      "Content-Type: ",
+      content_type,
+      "\r\n\r\n",
+      bytes,
+      "\r\n",
+      "--",
+      boundary,
+      "--\r\n"
     ]
   end
 
-  defp endpoint(opts), do: opts[:endpoint] || OpenAI.config(opts)[:stt_endpoint] || @default_endpoint
+  defp endpoint(opts),
+    do: opts[:endpoint] || OpenAI.config(opts)[:stt_endpoint] || @default_endpoint
 end

@@ -16,6 +16,15 @@ defmodule Synaptic.Voice.EventTest do
 
   test "valid?/1 rejects malformed payloads" do
     refute Event.valid?(%{v: 1})
-    refute Event.valid?(%{v: 1, session_id: "x", run_id: "y", seq: -1, ts_ms: 1, event: :ok, data: %{}})
+
+    refute Event.valid?(%{
+             v: 1,
+             session_id: "x",
+             run_id: "y",
+             seq: -1,
+             ts_ms: 1,
+             event: :ok,
+             data: %{}
+           })
   end
 end

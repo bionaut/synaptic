@@ -5,22 +5,22 @@ if Code.ensure_loaded?(Phoenix.Router) do
     use Phoenix.Router
 
     pipeline :browser do
-      plug :accepts, ["html"]
+      plug(:accepts, ["html"])
     end
 
     pipeline :api do
-      plug :accepts, ["json"]
+      plug(:accepts, ["json"])
     end
 
     scope "/" do
-      pipe_through :browser
-      get "/favicon.ico", Synaptic.Monitor.Web.PageController, :favicon
-      get "/", Synaptic.Monitor.Web.PageController, :index
+      pipe_through(:browser)
+      get("/favicon.ico", Synaptic.Monitor.Web.PageController, :favicon)
+      get("/", Synaptic.Monitor.Web.PageController, :index)
     end
 
     scope "/api" do
-      pipe_through :api
-      get "/snapshot", Synaptic.Monitor.Web.PageController, :snapshot
+      pipe_through(:api)
+      get("/snapshot", Synaptic.Monitor.Web.PageController, :snapshot)
     end
   end
 end
