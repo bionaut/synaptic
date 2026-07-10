@@ -22,10 +22,10 @@ defmodule Synaptic.Voice.Providers.TTSAdapterSupport do
     state
   end
 
-  def handle_synthesis_result(state, generation, result) do
+  def handle_synthesis_result(state, generation, result, opts \\ []) do
     case result do
       {:ok, audio_chunk, meta} when generation == state.generation ->
-        send(state.owner, {:synaptic_voice, :tts_chunk, audio_chunk, meta})
+        emit_synthesis_chunk(state, generation, audio_chunk, meta, opts)
         state
 
       {:ok, _audio_chunk, _meta} ->
@@ -36,5 +36,15 @@ defmodule Synaptic.Voice.Providers.TTSAdapterSupport do
         send(state.owner, {:synaptic_voice, :tts_error, reason})
         state
     end
+  end
+
+  def emit_synthesis_chunk(state, generation, audio_chunk, meta, opts \\ []) do
+    if generation == state.generation do
+      metadata = Keyword.get(opts, :metadata, %{})
+      meta = if is_map(metadata), do: Map.merge(metadata, meta), else: meta
+      send(state.owner, {:synaptic_voice, :tts_chunk, audio_chunk, meta})
+    end
+
+    :ok
   end
 end

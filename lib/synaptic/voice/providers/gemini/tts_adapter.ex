@@ -51,7 +51,7 @@ defmodule Synaptic.Voice.Providers.Gemini.TTSAdapter do
   def handle_cast({:synthesize, text_segment, opts}, state) do
     generation = state.generation
     result = synthesize(text_segment, Keyword.merge(state.opts, opts))
-    {:noreply, TTSAdapterSupport.handle_synthesis_result(state, generation, result)}
+    {:noreply, TTSAdapterSupport.handle_synthesis_result(state, generation, result, opts)}
   end
 
   def handle_cast({:flush, _opts}, state) do

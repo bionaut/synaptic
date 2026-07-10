@@ -92,6 +92,76 @@ defmodule Synaptic.Voice.HeadlessOutputStrategyTest do
     assert_single_shot_provider(:eleven_labs, elevenlabs_tts_expectation())
   end
 
+  test "stream metadata selects the utterance voice and survives into output events" do
+    bypass = Bypass.open()
+    {:ok, run_id} = Synaptic.start(WaitingWorkflow, %{})
+    wait_for(run_id, :waiting_for_human)
+
+    assert {:ok, %{session_id: session_id}} =
+             Synaptic.Voice.attach_run(run_id,
+               provider: :eleven_labs,
+               mode: :duplex,
+               keep_alive: true,
+               provider_opts: provider_opts(:eleven_labs, bypass.port)
+             )
+
+    :ok = Synaptic.Voice.subscribe_session(session_id)
+
+    on_exit(fn ->
+      Synaptic.Voice.unsubscribe_session(session_id)
+      :ok = Synaptic.Voice.stop_session(session_id, :normal)
+      _ = Synaptic.stop(run_id, :test_cleanup)
+    end)
+
+    Bypass.expect_once(bypass, "POST", "/tts/klara_voice", fn conn ->
+      Plug.Conn.resp(conn, 200, "klara-audio")
+    end)
+
+    PubSub.broadcast(
+      Synaptic.PubSub,
+      "synaptic:run:" <> run_id,
+      {:synaptic_event,
+       %{
+         event: :stream_chunk,
+         chunk: "Hi, I'm Klara.",
+         tts_opts: [voice_id: "klara_voice"],
+         speaker_id: "klara_minarikova",
+         display_name: "Klara Minarikova",
+         voice_id: "klara_voice"
+       }}
+    )
+
+    assert_receive {:synaptic_voice_event,
+                    %{
+                      event: :assistant_text_chunk,
+                      data: %{
+                        text: "Hi, I'm Klara.",
+                        speaker_id: "klara_minarikova",
+                        display_name: "Klara Minarikova",
+                        voice_id: "klara_voice"
+                      }
+                    }},
+                   1_000
+
+    PubSub.broadcast(
+      Synaptic.PubSub,
+      "synaptic:run:" <> run_id,
+      {:synaptic_event, %{event: :stream_done}}
+    )
+
+    assert_receive {:synaptic_voice_event,
+                    %{
+                      event: :assistant_audio_chunk,
+                      data: %{
+                        audio_chunk: "klara-audio",
+                        speaker_id: "klara_minarikova",
+                        display_name: "Klara Minarikova",
+                        voice_id: "klara_voice"
+                      }
+                    }},
+                   1_000
+  end
+
   test "custom adapter overrides stay on segmented fallback output" do
     {:ok, run_id} = Synaptic.start(WaitingWorkflow, %{})
     wait_for(run_id, :waiting_for_human)

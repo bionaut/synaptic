@@ -97,6 +97,8 @@ defmodule Synaptic.Voice.Sessions.Headless do
               turn_admission_monitor_ref: nil,
               turn_admission_text: nil,
               pending_end_turn_opts: [],
+              current_voice_turn_id: nil,
+              end_turn_started_at: nil,
               stt_final_mode: stt_final_mode,
               stt_adapter: stt_adapter,
               stt_pid: stt_pid,
@@ -112,12 +114,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
               last_turn_admission: nil,
               committed_turn_text: nil,
               turn_started_at: now_ms,
-              latency: %{
-                stt_first_partial_ms: nil,
-                llm_first_chunk_ms: nil,
-                tts_first_chunk_ms: nil,
-                turn_total_ms: nil
-              }
+              latency: empty_latency()
             }
 
             telemetry_metadata = telemetry_metadata(state)
@@ -175,6 +172,8 @@ defmodule Synaptic.Voice.Sessions.Headless do
   end
 
   def handle_call({:end_turn, opts}, _from, state) do
+    voice_turn_id = Keyword.get(opts, :voice_turn_id)
+
     log_flow(state, "end_turn_requested", %{
       opts: summarize_opts(opts),
       has_latest_final: is_binary(state.latest_final) and state.latest_final != "",
@@ -190,6 +189,9 @@ defmodule Synaptic.Voice.Sessions.Headless do
           state
           |> Map.put(:end_turn_requested, true)
           |> Map.put(:pending_end_turn_opts, opts)
+          |> Map.put(:current_voice_turn_id, voice_turn_id)
+          |> Map.put(:end_turn_started_at, now_ms())
+          |> reset_finish_latency()
 
         case state.latest_final do
           text when is_binary(text) and text != "" ->
@@ -239,7 +241,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
   end
 
   @impl true
-  def handle_info({:synaptic_event, %{event: :stream_chunk, chunk: chunk}}, state)
+  def handle_info({:synaptic_event, %{event: :stream_chunk, chunk: chunk} = event}, state)
       when is_binary(chunk) do
     log_flow(state, "workflow_stream_chunk", %{chars: String.length(chunk)})
 
@@ -248,11 +250,18 @@ defmodule Synaptic.Voice.Sessions.Headless do
     else
       state =
         state
+        |> mark_finish_latency(:first_text_ms)
         |> apply_lifecycle_event(:workflow_stream_chunk_started)
         |> mark_llm_latency()
-        |> emit(:assistant_text_chunk, %{text: chunk})
+        |> emit(:assistant_text_chunk, Map.put(stream_metadata(event), :text, chunk))
 
-      {actions, output_state} = Output.consume_chunk(state.output_state, chunk)
+      synthesis_opts =
+        event
+        |> Map.get(:tts_opts, [])
+        |> normalize_tts_opts()
+        |> Keyword.put(:metadata, stream_metadata(event))
+
+      {actions, output_state} = Output.consume_chunk(state.output_state, chunk, synthesis_opts)
       state = %{state | output_state: output_state, tts_buffer: Output.tts_buffer(output_state)}
       :ok = dispatch_output_actions(state, actions)
 
@@ -411,7 +420,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
       when is_binary(audio_chunk) and is_map(meta) do
     log_flow(state, "tts_chunk", %{bytes: byte_size(audio_chunk), meta: summarize_map(meta)})
 
-    state = mark_tts_latency(state)
+    state = state |> mark_finish_latency(:first_audio_ms) |> mark_tts_latency()
 
     :telemetry.execute(
       [:synaptic, :voice, :tts, :chunk],
@@ -516,6 +525,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
         playback_drain_pending: state.playback_drain_pending,
         stt_final_mode: state.stt_final_mode,
         pending_end_turn_opts: state.pending_end_turn_opts,
+        current_voice_turn_id: state.current_voice_turn_id,
         current_prompt_message: state.current_prompt_message,
         turn_segments: state.turn_segments,
         last_turn_admission: state.last_turn_admission,
@@ -704,6 +714,47 @@ defmodule Synaptic.Voice.Sessions.Headless do
     end
   end
 
+  defp mark_finish_latency(%{end_turn_started_at: nil} = state, _key), do: state
+
+  defp mark_finish_latency(state, key) do
+    if Map.get(state.latency, key) do
+      state
+    else
+      duration_ms = max(now_ms() - state.end_turn_started_at, 0)
+      latency = Map.put(state.latency, key, duration_ms)
+
+      :telemetry.execute(
+        [:synaptic, :voice, :turn, :stage],
+        %{duration_ms: duration_ms},
+        Map.put(telemetry_metadata(state), :stage, key)
+      )
+
+      %{state | latency: latency}
+    end
+  end
+
+  defp reset_finish_latency(state) do
+    latency =
+      state.latency
+      |> Map.put(:stt_final_ms, nil)
+      |> Map.put(:first_text_ms, nil)
+      |> Map.put(:first_audio_ms, nil)
+
+    %{state | latency: latency}
+  end
+
+  defp empty_latency do
+    %{
+      stt_first_partial_ms: nil,
+      llm_first_chunk_ms: nil,
+      tts_first_chunk_ms: nil,
+      turn_total_ms: nil,
+      stt_final_ms: nil,
+      first_text_ms: nil,
+      first_audio_ms: nil
+    }
+  end
+
   defp maybe_record_turn_total(%{turn_started_at: nil} = state), do: state
 
   defp maybe_record_turn_total(state) do
@@ -732,7 +783,10 @@ defmodule Synaptic.Voice.Sessions.Headless do
         turn_admission_monitor_ref: nil,
         turn_admission_text: nil,
         pending_end_turn_opts: [],
+        current_voice_turn_id: nil,
+        end_turn_started_at: nil,
         turn_started_at: now_ms(),
+        latency: empty_latency(),
         output_state: output_state,
         tts_buffer: Output.tts_buffer(output_state)
     }
@@ -760,6 +814,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
         state
         |> Map.put(:latest_partial, trimmed)
         |> Map.put(:latest_final, accumulated)
+        |> mark_finish_latency(:stt_final_ms)
         |> mark_stt_latency()
         |> emit(:input_final_text, %{
           text: accumulated,
@@ -919,11 +974,28 @@ defmodule Synaptic.Voice.Sessions.Headless do
 
   defp dispatch_output_actions(state, actions) do
     Enum.each(actions, fn
-      {:synthesize, text} ->
-        :ok = state.tts_adapter.synthesize_segment(state.tts_pid, text, [])
+      {:synthesize, text, opts} ->
+        :ok = state.tts_adapter.synthesize_segment(state.tts_pid, text, opts)
     end)
 
     :ok
+  end
+
+  defp normalize_tts_opts(opts) when is_list(opts), do: opts
+  defp normalize_tts_opts(opts) when is_map(opts), do: Map.to_list(opts)
+  defp normalize_tts_opts(_opts), do: []
+
+  defp stream_metadata(event) do
+    Map.take(event, [
+      :speaker_id,
+      :display_name,
+      :voice_id,
+      :gender,
+      :voice_category,
+      :voice_provider,
+      :voice_label,
+      :voice_turn_id
+    ])
   end
 
   defp apply_lifecycle_event(state, event) do
@@ -1002,7 +1074,8 @@ defmodule Synaptic.Voice.Sessions.Headless do
       mode: state.mode,
       stt_provider: state.stack.stt,
       tts_provider: state.stack.tts,
-      realtime_provider: state.stack.realtime
+      realtime_provider: state.stack.realtime,
+      voice_turn_id: state.current_voice_turn_id
     }
   end
 
@@ -1019,7 +1092,8 @@ defmodule Synaptic.Voice.Sessions.Headless do
           waiting_for_human_pending: state.waiting_for_human_pending,
           output_in_progress: state.output_in_progress,
           playback_drain_pending: state.playback_drain_pending,
-          end_turn_requested: state.end_turn_requested
+          end_turn_requested: state.end_turn_requested,
+          voice_turn_id: state.current_voice_turn_id
         })
         |> inspect(limit: 60)
 
