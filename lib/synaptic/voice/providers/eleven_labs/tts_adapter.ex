@@ -76,7 +76,7 @@ defmodule Synaptic.Voice.Providers.ElevenLabs.TTSAdapter do
 
     case Finch.request(request, ElevenLabs.finch(opts)) do
       {:ok, %Finch.Response{status: 200, body: response_body}} when is_binary(response_body) ->
-        {:ok, response_body, tts_meta()}
+        decode_response(response_body, opts)
 
       {:ok, %Finch.Response{status: status, body: response_body}} ->
         {:error, {:upstream_error, status, response_body}}
@@ -109,14 +109,44 @@ defmodule Synaptic.Voice.Providers.ElevenLabs.TTSAdapter do
     base = ElevenLabs.tts_endpoint(opts) |> String.trim_trailing("/")
     voice_id = ElevenLabs.voice_id(opts) |> URI.encode_www_form()
     output_format = ElevenLabs.tts_output_format(opts)
-    base <> "/" <> voice_id <> "?" <> URI.encode_query(%{"output_format" => output_format})
+    suffix = if ElevenLabs.include_timestamps?(opts), do: "/with-timestamps", else: ""
+
+    base <>
+      "/" <> voice_id <> suffix <> "?" <> URI.encode_query(%{"output_format" => output_format})
   end
 
-  defp tts_meta do
+  defp decode_response(response_body, opts) do
+    if ElevenLabs.include_timestamps?(opts) do
+      decode_timestamp_response(response_body)
+    else
+      {:ok, response_body, tts_meta()}
+    end
+  end
+
+  defp decode_timestamp_response(response_body) do
+    with {:ok, %{"audio_base64" => audio_base64} = payload} when is_binary(audio_base64) <-
+           Jason.decode(response_body),
+         {:ok, audio_chunk} <- Base.decode64(audio_base64) do
+      {:ok, audio_chunk, tts_meta(payload)}
+    else
+      {:ok, _payload} -> {:error, {:invalid_timestamp_response, :missing_audio_base64}}
+      {:error, %Jason.DecodeError{} = error} -> {:error, {:invalid_timestamp_response, error}}
+      :error -> {:error, {:invalid_timestamp_response, :invalid_audio_base64}}
+    end
+  end
+
+  defp tts_meta(payload \\ %{}) do
     %{
       provider: :eleven_labs,
       audio_format: %{encoding: :pcm16le, sample_rate_hz: 24_000, channels: 1},
       content_type: "audio/L16"
     }
+    |> maybe_put_alignment(:alignment, Map.get(payload, "alignment"))
+    |> maybe_put_alignment(:normalized_alignment, Map.get(payload, "normalized_alignment"))
   end
+
+  defp maybe_put_alignment(meta, key, alignment) when is_map(alignment),
+    do: Map.put(meta, key, alignment)
+
+  defp maybe_put_alignment(meta, _key, _alignment), do: meta
 end

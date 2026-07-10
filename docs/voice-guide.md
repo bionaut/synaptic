@@ -77,7 +77,8 @@ config :synaptic, Synaptic.Voice.Providers.Gemini,
 config :synaptic, Synaptic.Voice.Providers.ElevenLabs,
   tts_model_id: "eleven_multilingual_v2",
   stt_model_id: "scribe_v2",
-  tts_output_format: "pcm_24000"
+  tts_output_format: "pcm_24000",
+  include_timestamps: true
 ```
 
 **Runtime / secrets** (e.g. `config/runtime.exs`):

@@ -150,6 +150,71 @@ defmodule Synaptic.Voice.ElevenLabsTest do
     assert_receive {:synaptic_voice, :tts_done, %{provider: :eleven_labs}}, 1_000
   end
 
+  test "ElevenLabs TTS optionally decodes timestamp audio and emits alignment metadata" do
+    bypass = Bypass.open()
+    audio = <<0, 1, 2, 3>>
+
+    alignment = %{
+      "characters" => ["h", "i"],
+      "character_start_times_seconds" => [0.0, 0.1],
+      "character_end_times_seconds" => [0.1, 0.2]
+    }
+
+    normalized_alignment = Map.put(alignment, "characters", ["H", "i"])
+
+    Bypass.expect_once(bypass, "POST", "/tts/voice_123/with-timestamps", fn conn ->
+      assert conn.query_string == "output_format=pcm_24000"
+
+      Plug.Conn.resp(
+        conn,
+        200,
+        Jason.encode!(%{
+          "audio_base64" => Base.encode64(audio),
+          "alignment" => alignment,
+          "normalized_alignment" => normalized_alignment
+        })
+      )
+    end)
+
+    {:ok, pid} =
+      TTSAdapter.start_link(self(),
+        tts_endpoint: "http://localhost:#{bypass.port}/tts",
+        api_key: "test-key",
+        voice_id: "voice_123",
+        include_timestamps: true,
+        finch: Synaptic.Finch
+      )
+
+    :ok = TTSAdapter.synthesize_segment(pid, "hi")
+
+    assert_receive {:synaptic_voice, :tts_chunk, ^audio, meta}, 1_000
+    assert meta.alignment == alignment
+    assert meta.normalized_alignment == normalized_alignment
+  end
+
+  test "ElevenLabs TTS reports malformed timestamp responses" do
+    bypass = Bypass.open()
+
+    Bypass.expect_once(bypass, "POST", "/tts/voice_123/with-timestamps", fn conn ->
+      Plug.Conn.resp(conn, 200, Jason.encode!(%{"audio_base64" => "not-base64"}))
+    end)
+
+    {:ok, pid} =
+      TTSAdapter.start_link(self(),
+        tts_endpoint: "http://localhost:#{bypass.port}/tts",
+        api_key: "test-key",
+        voice_id: "voice_123",
+        include_timestamps: true,
+        finch: Synaptic.Finch
+      )
+
+    :ok = TTSAdapter.synthesize_segment(pid, "hello")
+
+    assert_receive {:synaptic_voice, :tts_error,
+                    {:invalid_timestamp_response, :invalid_audio_base64}},
+                   1_000
+  end
+
   test "ElevenLabs TTS emits tts_error for missing voice_id and upstream failure" do
     error_bypass = Bypass.open()
 

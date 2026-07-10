@@ -40,6 +40,10 @@ defmodule Synaptic.Voice.Providers.ElevenLabs do
     opts[:tts_output_format] || config(opts)[:tts_output_format] || @default_tts_output_format
   end
 
+  def include_timestamps?(opts) do
+    Keyword.get(opts, :include_timestamps, config(opts)[:include_timestamps] || false)
+  end
+
   def tts_endpoint(opts) do
     opts[:tts_endpoint] || opts[:endpoint] || config(opts)[:tts_endpoint] ||
       base_url(opts) <> "/v1/text-to-speech"
