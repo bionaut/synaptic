@@ -123,6 +123,23 @@ defmodule Synaptic.Voice.Sessions.Headless.Lifecycle do
     {:ok, next_ctx, commands}
   end
 
+  def reduce(ctx, :hold_turn) do
+    next_ctx =
+      ctx
+      |> clear_turn_flags_ctx()
+      |> Map.put(:latest_final, nil)
+      |> Map.put(:status, :listening)
+
+    commands = [
+      {:set_flag, :latest_final, nil},
+      {:clear_turn_flags},
+      {:set_status, :listening},
+      {:emit_state_changed, :listening}
+    ]
+
+    {:ok, next_ctx, commands}
+  end
+
   def reduce(ctx, :resume_ok) do
     next_ctx =
       ctx
@@ -162,6 +179,8 @@ defmodule Synaptic.Voice.Sessions.Headless.Lifecycle do
   def reduce(ctx, _event), do: {:error, :invalid_transition, ctx, []}
 
   @spec turn_phase(ctx()) :: atom()
+  def turn_phase(%{status: :evaluating_turn}), do: :evaluating_turn
+
   def turn_phase(%{
         waiting_for_human_pending: true,
         output_in_progress: false,

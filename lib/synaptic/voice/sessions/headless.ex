@@ -5,7 +5,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
   require Logger
 
   alias Phoenix.PubSub
-  alias Synaptic.Voice.{Event, SessionRegistry}
+  alias Synaptic.Voice.{Event, SessionRegistry, TurnAdmission}
   alias Synaptic.Voice.Headless.{ProviderCapabilities, Strategy}
   alias Synaptic.Voice.Sessions.Headless.{Lifecycle, Output}
 
@@ -55,6 +55,11 @@ defmodule Synaptic.Voice.Sessions.Headless do
     stack = Keyword.fetch!(opts, :stack)
     stack_opts = Keyword.get(opts, :stack_opts, %{})
     resume_mapper = Keyword.get(opts, :resume_mapper, &default_resume_mapper/2)
+    turn_admission = Keyword.get(opts, :turn_admission)
+    turn_admission_opts = Keyword.get(opts, :turn_admission_opts, [])
+
+    stt_final_mode =
+      Keyword.get(opts, :stt_final_mode, provider_capabilities.stt_final_mode)
 
     stt_adapter = provider_modules.stt
     tts_adapter = provider_modules.tts
@@ -86,6 +91,13 @@ defmodule Synaptic.Voice.Sessions.Headless do
               output_in_progress: false,
               playback_drain_pending: false,
               resume_mapper: resume_mapper,
+              turn_admission: turn_admission,
+              turn_admission_opts: turn_admission_opts,
+              turn_admission_ref: nil,
+              turn_admission_monitor_ref: nil,
+              turn_admission_text: nil,
+              pending_end_turn_opts: [],
+              stt_final_mode: stt_final_mode,
               stt_adapter: stt_adapter,
               stt_pid: stt_pid,
               tts_adapter: tts_adapter,
@@ -95,6 +107,10 @@ defmodule Synaptic.Voice.Sessions.Headless do
               tts_buffer: "",
               latest_partial: nil,
               latest_final: nil,
+              current_prompt_message: waiting_prompt(run_id),
+              turn_segments: [],
+              last_turn_admission: nil,
+              committed_turn_text: nil,
               turn_started_at: now_ms,
               latency: %{
                 stt_first_partial_ms: nil,
@@ -153,14 +169,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
 
   def handle_call({:push_text, text, _opts}, _from, state) when is_binary(text) do
     log_flow(state, "push_text", %{chars: String.length(text), status: state.status})
-    state = maybe_interrupt_for_input(state)
-
-    state =
-      state
-      |> Map.put(:latest_partial, text)
-      |> Map.put(:latest_final, text)
-      |> mark_stt_latency()
-      |> emit(:input_final_text, %{text: text})
+    state = record_final_transcript(state, text)
 
     {:reply, :ok, state}
   end
@@ -172,18 +181,26 @@ defmodule Synaptic.Voice.Sessions.Headless do
       status: state.status
     })
 
-    state = Map.put(state, :end_turn_requested, true)
-
     state =
-      case state.latest_final do
-        text when is_binary(text) and text != "" ->
-          log_flow(state, "end_turn_reuse_latest_final", %{chars: String.length(text)})
-          resume_with_text(state, text, opts)
-
-        _ ->
-          log_flow(state, "end_turn_forward_to_stt", %{})
-          :ok = state.stt_adapter.end_turn(state.stt_pid, opts)
+      if end_turn_ignored?(state) do
+        log_flow(state, "end_turn_ignored", %{status: state.status})
+        state
+      else
+        state =
           state
+          |> Map.put(:end_turn_requested, true)
+          |> Map.put(:pending_end_turn_opts, opts)
+
+        case state.latest_final do
+          text when is_binary(text) and text != "" ->
+            log_flow(state, "end_turn_reuse_latest_final", %{chars: String.length(text)})
+            start_turn_admission(state, text)
+
+          _ ->
+            log_flow(state, "end_turn_forward_to_stt", %{})
+            :ok = state.stt_adapter.end_turn(state.stt_pid, opts)
+            Map.put(state, :committed_turn_text, nil)
+        end
       end
 
     {:reply, :ok, state}
@@ -269,10 +286,16 @@ defmodule Synaptic.Voice.Sessions.Headless do
     end
   end
 
-  def handle_info({:synaptic_event, %{event: :waiting_for_human}}, state) do
+  def handle_info({:synaptic_event, %{event: :waiting_for_human} = event}, state) do
     log_flow(state, "workflow_waiting_for_human", %{status: state.status})
 
-    state = apply_lifecycle_event(state, :workflow_waiting_for_human)
+    state =
+      state
+      |> Map.put(
+        :current_prompt_message,
+        Map.get(event, :message) || state.current_prompt_message
+      )
+      |> apply_lifecycle_event(:workflow_waiting_for_human)
 
     {:noreply, state}
   end
@@ -328,11 +351,7 @@ defmodule Synaptic.Voice.Sessions.Headless do
 
       {:noreply, new_state}
     else
-      new_state =
-        state
-        |> maybe_interrupt_for_input()
-        |> Map.put(:latest_final, trimmed)
-        |> emit(:input_final_text, %{text: trimmed})
+      new_state = record_final_transcript(state, trimmed)
 
       :telemetry.execute(
         [:synaptic, :voice, :stt, :final],
@@ -346,8 +365,8 @@ defmodule Synaptic.Voice.Sessions.Headless do
       should_resume = new_state.end_turn_requested or state.mode == :turn_based
 
       new_state =
-        if should_resume do
-          resume_with_text(new_state, trimmed, [])
+        if should_resume and is_binary(new_state.latest_final) and new_state.latest_final != "" do
+          start_turn_admission(new_state, new_state.latest_final)
         else
           new_state
         end
@@ -370,6 +389,22 @@ defmodule Synaptic.Voice.Sessions.Headless do
       |> apply_lifecycle_event({:stt_error, normalize_error_reason(reason)})
 
     {:noreply, new_state}
+  end
+
+  def handle_info({:turn_admission_result, ref, result}, %{turn_admission_ref: ref} = state) do
+    {:noreply, apply_turn_admission_result(state, result)}
+  end
+
+  def handle_info({:turn_admission_result, _ref, _result}, state) do
+    log_flow(state, "stale_turn_admission_result", %{})
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {:DOWN, monitor_ref, :process, _pid, reason},
+        %{turn_admission_monitor_ref: monitor_ref} = state
+      ) do
+    {:noreply, apply_turn_admission_result(state, {:error, {:policy_process_exit, reason}})}
   end
 
   def handle_info({:synaptic_voice, :tts_chunk, audio_chunk, meta}, state)
@@ -478,7 +513,15 @@ defmodule Synaptic.Voice.Sessions.Headless do
         tts_buffer: state.tts_buffer,
         waiting_for_human_pending: state.waiting_for_human_pending,
         output_in_progress: state.output_in_progress,
-        playback_drain_pending: state.playback_drain_pending
+        playback_drain_pending: state.playback_drain_pending,
+        stt_final_mode: state.stt_final_mode,
+        pending_end_turn_opts: state.pending_end_turn_opts,
+        current_prompt_message: state.current_prompt_message,
+        turn_segments: state.turn_segments,
+        last_turn_admission: state.last_turn_admission,
+        committed_turn_text: state.committed_turn_text,
+        turn_admission_pending: not is_nil(state.turn_admission_ref),
+        turn_admission_text: state.turn_admission_text
       }
     }
   end
@@ -515,7 +558,9 @@ defmodule Synaptic.Voice.Sessions.Headless do
         log_flow(state, "resume_ok", %{})
 
         state
+        |> Map.put(:committed_turn_text, normalize_transcript(text))
         |> clear_consumed_transcript()
+        |> clear_output_suppression()
         |> apply_lifecycle_event(:resume_ok)
 
       {:error, reason} ->
@@ -530,6 +575,12 @@ defmodule Synaptic.Voice.Sessions.Headless do
     state
     |> Map.put(:latest_partial, nil)
     |> Map.put(:latest_final, nil)
+    |> Map.put(:pending_end_turn_opts, [])
+  end
+
+  defp clear_output_suppression(state) do
+    output_state = Output.reset_turn(state.output_state)
+    %{state | output_state: output_state, tts_buffer: Output.tts_buffer(output_state)}
   end
 
   defp emit(state, event, data) do
@@ -567,6 +618,15 @@ defmodule Synaptic.Voice.Sessions.Headless do
       _ ->
         %{human_input_text: text}
     end
+  end
+
+  defp waiting_prompt(run_id) do
+    case Synaptic.inspect(run_id) do
+      %{waiting: %{message: message}} when is_binary(message) -> message
+      _ -> nil
+    end
+  catch
+    :exit, _ -> nil
   end
 
   defp safe_stop_adapter(module, pid, reason) do
@@ -666,11 +726,196 @@ defmodule Synaptic.Voice.Sessions.Headless do
       state
       | latest_partial: nil,
         latest_final: nil,
+        turn_segments: [],
+        last_turn_admission: nil,
+        turn_admission_ref: nil,
+        turn_admission_monitor_ref: nil,
+        turn_admission_text: nil,
+        pending_end_turn_opts: [],
         turn_started_at: now_ms(),
         output_state: output_state,
         tts_buffer: Output.tts_buffer(output_state)
     }
   end
+
+  defp record_final_transcript(state, text) when is_binary(text) do
+    trimmed = String.trim(text)
+
+    cond do
+      trimmed == "" ->
+        state
+
+      committed_turn_duplicate?(state, trimmed) ->
+        log_flow(state, "stt_final_ignored_committed_duplicate", %{chars: String.length(trimmed)})
+        state
+
+      true ->
+        state =
+          state
+          |> maybe_interrupt_for_input()
+          |> append_turn_segment(trimmed)
+
+        accumulated = accumulated_turn_text(state)
+
+        state
+        |> Map.put(:latest_partial, trimmed)
+        |> Map.put(:latest_final, accumulated)
+        |> mark_stt_latency()
+        |> emit(:input_final_text, %{
+          text: accumulated,
+          latest_transcript: trimmed,
+          pending_state: "candidate"
+        })
+    end
+  end
+
+  defp append_turn_segment(%{stt_final_mode: :segment} = state, text) do
+    segments =
+      if List.last(state.turn_segments) == text do
+        state.turn_segments
+      else
+        state.turn_segments ++ [text]
+      end
+
+    %{state | turn_segments: segments}
+  end
+
+  defp append_turn_segment(%{stt_final_mode: :cumulative} = state, text) do
+    current = accumulated_turn_text(state)
+
+    segments =
+      cond do
+        current == "" -> [text]
+        String.starts_with?(text, current) -> [text]
+        String.starts_with?(current, text) -> state.turn_segments
+        true -> [text]
+      end
+
+    %{state | turn_segments: segments}
+  end
+
+  defp append_turn_segment(state, text), do: %{state | turn_segments: [text]}
+
+  defp accumulated_turn_text(%{stt_final_mode: :segment, turn_segments: segments}) do
+    segments
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join(" ")
+    |> String.trim()
+  end
+
+  defp accumulated_turn_text(%{turn_segments: segments}) do
+    segments |> List.last() |> to_string() |> String.trim()
+  end
+
+  defp start_turn_admission(%{turn_admission_ref: ref} = state, _text) when not is_nil(ref),
+    do: state
+
+  defp start_turn_admission(state, text) when is_binary(text) do
+    if is_nil(state.turn_admission) do
+      commit_turn(state, text, %{})
+    else
+      ref = make_ref()
+      owner = self()
+      input = turn_admission_input(state, text)
+      policy = state.turn_admission
+      policy_opts = state.turn_admission_opts
+
+      {_pid, monitor_ref} =
+        spawn_monitor(fn ->
+          send(
+            owner,
+            {:turn_admission_result, ref, TurnAdmission.evaluate(policy, input, policy_opts)}
+          )
+        end)
+
+      state
+      |> Map.put(:turn_admission_ref, ref)
+      |> Map.put(:turn_admission_monitor_ref, monitor_ref)
+      |> Map.put(:turn_admission_text, text)
+      |> Map.put(:status, :evaluating_turn)
+      |> emit(:turn_admission_started, %{
+        text: text,
+        transcript_count: length(state.turn_segments)
+      })
+      |> emit(:duplex_state_changed, %{status: :evaluating_turn, mode: state.mode})
+    end
+  end
+
+  defp turn_admission_input(state, latest_text) do
+    %{
+      prompt: state.current_prompt_message,
+      latest_transcript: state.latest_partial || latest_text,
+      accumulated_transcript: accumulated_turn_text(state),
+      transcript_count: length(state.turn_segments),
+      end_turn_opts: state.pending_end_turn_opts
+    }
+  end
+
+  defp apply_turn_admission_result(state, {:ok, :commit, metadata}) do
+    text = state.turn_admission_text || state.latest_final || accumulated_turn_text(state)
+
+    state
+    |> clear_turn_admission_pending()
+    |> Map.put(:last_turn_admission, %{action: :commit, metadata: metadata})
+    |> emit(:turn_admission_decided, %{action: :commit, metadata: metadata})
+    |> commit_turn(text, metadata)
+  end
+
+  defp apply_turn_admission_result(state, {:ok, :keep_listening, metadata}) do
+    state
+    |> clear_turn_admission_pending()
+    |> Map.put(:pending_end_turn_opts, [])
+    |> Map.put(:last_turn_admission, %{action: :keep_listening, metadata: metadata})
+    |> emit(:turn_admission_decided, %{action: :keep_listening, metadata: metadata})
+    |> apply_lifecycle_event(:hold_turn)
+  end
+
+  defp apply_turn_admission_result(state, {:error, reason}) do
+    text = state.turn_admission_text || state.latest_final || accumulated_turn_text(state)
+
+    state
+    |> clear_turn_admission_pending()
+    |> emit(:session_error, %{
+      source: :turn_admission,
+      reason: normalize_error_reason(reason),
+      fallback: :commit
+    })
+    |> Map.put(:last_turn_admission, %{action: :commit, metadata: %{fallback: true}})
+    |> emit(:turn_admission_decided, %{action: :commit, metadata: %{fallback: true}})
+    |> commit_turn(text, %{fallback: true})
+  end
+
+  defp clear_turn_admission_pending(state) do
+    if state.turn_admission_monitor_ref do
+      Process.demonitor(state.turn_admission_monitor_ref, [:flush])
+    end
+
+    state
+    |> Map.put(:turn_admission_ref, nil)
+    |> Map.put(:turn_admission_monitor_ref, nil)
+    |> Map.put(:turn_admission_text, nil)
+  end
+
+  defp commit_turn(state, text, _metadata),
+    do: resume_with_text(state, text, state.pending_end_turn_opts)
+
+  defp end_turn_ignored?(state) do
+    state.status in [:thinking, :awaiting_playback_drain, :evaluating_turn]
+  end
+
+  defp committed_turn_duplicate?(state, text) do
+    committed = state.committed_turn_text
+    is_binary(committed) and committed != "" and committed == normalize_transcript(text)
+  end
+
+  defp normalize_transcript(text) when is_binary(text) do
+    text
+    |> String.trim()
+    |> String.replace(~r/\s+/, " ")
+  end
+
+  defp normalize_transcript(_text), do: ""
 
   defp dispatch_output_actions(state, actions) do
     Enum.each(actions, fn

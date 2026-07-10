@@ -183,6 +183,42 @@ When you own the transport (e.g. your own WebSocket) and want Synaptic to run ST
 - **Unsupported operations**: functions that do not make sense for provider+mode return `{:error, :unsupported_for_mode}`.
 - **Cleanup**: Call `Synaptic.Voice.stop_session(session_id, reason)` and unsubscribe when the session ends.
 
+### Optional turn admission
+
+Headless sessions can defer workflow resume until an application policy decides
+whether a final transcript is complete. Pass `turn_admission` as a one- or
+two-argument function, or as a module implementing
+`Synaptic.Voice.TurnAdmission`:
+
+```elixir
+turn_admission = fn input, _opts ->
+  if incomplete?(input.accumulated_transcript) do
+    {:keep_listening, %{reason: :incomplete}}
+  else
+    {:commit, %{reason: :complete}}
+  end
+end
+
+{:ok, session} =
+  Synaptic.Voice.attach_run(run_id,
+    provider: :eleven_labs,
+    mode: :duplex,
+    turn_admission: turn_admission,
+    turn_admission_opts: [policy: :my_app]
+  )
+```
+
+The policy input contains `:prompt`, `:latest_transcript`,
+`:accumulated_transcript`, `:transcript_count`, and the original
+`:end_turn_opts`. Policies run outside the session GenServer, so model- or
+network-backed decisions do not block voice control messages. Policy failures
+emit a `:session_error` and fall back to `:commit` so accepted speech is not
+silently lost.
+
+Providers declare whether final transcripts are segments or cumulative
+hypotheses. Override this only for custom adapters with
+`stt_final_mode: :segment | :cumulative | :replace`.
+
 ---
 
 ## Headless: modules and event envelope
@@ -190,7 +226,7 @@ When you own the transport (e.g. your own WebSocket) and want Synaptic to run ST
 - **Modules**: `Synaptic.Voice` (API), `Synaptic.Voice.Router`, `Synaptic.Voice.SessionRegistry`, `Synaptic.Voice.HeadlessSessionSupervisor`, `Synaptic.Voice.RealtimeSessionSupervisor`, `Synaptic.Voice.Event`, `Synaptic.Voice.TextSegmenter`; engines: `Synaptic.Voice.Sessions.Headless`, `Synaptic.Voice.Sessions.Realtime.OpenAI`, `Synaptic.Voice.Sessions.Realtime.Gemini`; providers: `Synaptic.Voice.Providers.OpenAI.*`, `Synaptic.Voice.Providers.Gemini.*`, `Synaptic.Voice.Providers.ElevenLabs.*`.
 - **Headless output strategies**: headless sessions select an internal TTS strategy from provider capability metadata. Current strategies are `:segmented_batch`, `:single_shot`, and reserved `:streaming`.
 - **Envelope**: guaranteed fields `:v`, `:session_id`, `:run_id`, `:seq`, `:ts_ms`, `:event`, `:data`.
-- **Event names**: `:turn_started`, `:input_partial_text`, `:input_final_text`, `:assistant_text_chunk`, `:assistant_text_done`, `:assistant_audio_chunk`, `:assistant_audio_done`, `:duplex_interruption`, `:duplex_state_changed`, `:session_error`, `:session_stopped`.
+- **Event names**: `:turn_started`, `:input_partial_text`, `:input_final_text`, `:turn_admission_started`, `:turn_admission_decided`, `:assistant_text_chunk`, `:assistant_text_done`, `:assistant_audio_chunk`, `:assistant_audio_done`, `:duplex_interruption`, `:duplex_state_changed`, `:session_error`, `:session_stopped`.
 
 ---
 

@@ -105,6 +105,22 @@ defmodule Synaptic.Voice.Sessions.Headless.LifecycleTest do
     assert {:emit, :session_error, %{source: :resume, reason: ^reason}} = List.last(commands)
   end
 
+  test "hold_turn keeps the session listening without committing the final transcript" do
+    ctx = base_ctx(%{status: :evaluating_turn, end_turn_requested: true, latest_final: "draft"})
+
+    assert {:ok, next_ctx, commands} = Lifecycle.reduce(ctx, :hold_turn)
+    assert next_ctx.status == :listening
+    assert next_ctx.end_turn_requested == false
+    assert next_ctx.latest_final == nil
+
+    assert commands == [
+             {:set_flag, :latest_final, nil},
+             {:clear_turn_flags},
+             {:set_status, :listening},
+             {:emit_state_changed, :listening}
+           ]
+  end
+
   test "unknown transition returns invalid_transition error" do
     ctx = base_ctx()
     assert {:error, :invalid_transition, ^ctx, []} = Lifecycle.reduce(ctx, :unknown_event)
