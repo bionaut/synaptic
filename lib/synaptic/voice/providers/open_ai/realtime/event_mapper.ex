@@ -32,12 +32,27 @@ defmodule Synaptic.Voice.Providers.OpenAI.Realtime.EventMapper do
     {:ok, %{event: :assistant_text_chunk, data: %{text: text}}}
   end
 
+  def normalize_event(%{"type" => "response.output_audio_transcript.delta", "delta" => text})
+      when is_binary(text) do
+    {:ok, %{event: :assistant_text_chunk, data: %{text: text}}}
+  end
+
   def normalize_event(%{"type" => "response.audio_transcript.done", "transcript" => text})
       when is_binary(text) do
     {:ok, %{event: :assistant_text_chunk, data: %{text: text}}}
   end
 
+  def normalize_event(%{"type" => "response.output_audio_transcript.done", "transcript" => text})
+      when is_binary(text) do
+    {:ok, %{event: :assistant_text_chunk, data: %{text: text}}}
+  end
+
   def normalize_event(%{"type" => "response.text.delta", "delta" => text}) when is_binary(text) do
+    {:ok, %{event: :assistant_text_chunk, data: %{text: text}}}
+  end
+
+  def normalize_event(%{"type" => "response.output_text.delta", "delta" => text})
+      when is_binary(text) do
     {:ok, %{event: :assistant_text_chunk, data: %{text: text}}}
   end
 

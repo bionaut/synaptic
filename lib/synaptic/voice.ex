@@ -1,6 +1,10 @@
 defmodule Synaptic.Voice do
   @moduledoc """
   Unified voice session API for headless and realtime integrations.
+
+  OpenAI realtime sessions preserve legacy behavior unless callers pass
+  `experience: :realtime_2_1` or a non-nil `profile:`. Explicit experience
+  selection always wins.
   """
 
   alias Phoenix.PubSub
@@ -34,6 +38,14 @@ defmodule Synaptic.Voice do
 
   def ingest_provider_event(session_id, payload) when is_map(payload),
     do: Router.ingest_provider_event(session_id, payload)
+
+  @doc """
+  Grants one-shot approval for a capability that emitted
+  `:capability_confirmation_required` in this session.
+  """
+  def approve_capability(session_id, capability_name)
+      when is_binary(session_id) and is_binary(capability_name),
+      do: Router.approve_capability(session_id, capability_name)
 
   def stop_session(session_id, reason \\ :normal) do
     Router.stop_session(session_id, reason)

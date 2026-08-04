@@ -78,6 +78,9 @@ defmodule Synaptic.Voice.Router do
   def ingest_provider_event(session_id, payload),
     do: dispatch(session_id, :ingest_provider_event, [payload])
 
+  def approve_capability(session_id, capability_name),
+    do: dispatch(session_id, :approve_capability, [capability_name])
+
   def lookup(session_id) when is_binary(session_id) do
     case Registry.lookup(SessionRegistry, session_id) do
       [{pid, metadata}] -> {:ok, pid, metadata}

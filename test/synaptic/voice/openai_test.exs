@@ -14,6 +14,26 @@ defmodule Synaptic.Voice.OpenAITest do
     assert {:ignore, _} = EventMapper.normalize_event(%{"type" => "unknown"})
   end
 
+  test "EventMapper normalizes GA realtime output events" do
+    assert {:ok, %{event: :assistant_text_chunk, data: %{text: "hello"}}} =
+             EventMapper.normalize_event(%{
+               "type" => "response.output_audio_transcript.delta",
+               "delta" => "hello"
+             })
+
+    assert {:ok, %{event: :assistant_text_chunk, data: %{text: "done"}}} =
+             EventMapper.normalize_event(%{
+               "type" => "response.output_audio_transcript.done",
+               "transcript" => "done"
+             })
+
+    assert {:ok, %{event: :assistant_text_chunk, data: %{text: "text"}}} =
+             EventMapper.normalize_event(%{
+               "type" => "response.output_text.delta",
+               "delta" => "text"
+             })
+  end
+
   test "STTAdapter posts transcription request and emits final text" do
     bypass = Bypass.open()
 
@@ -157,18 +177,106 @@ defmodule Synaptic.Voice.OpenAITest do
     assert_receive {:synaptic_voice, :tts_error, {:upstream_error, 500, _}}, 1_000
   end
 
-  test "SessionBootstrap creates ephemeral session" do
+  test "SessionBootstrap preserves the legacy ephemeral-session contract" do
     bypass = Bypass.open()
 
     Bypass.expect_once(bypass, "POST", "/session", fn conn ->
-      Plug.Conn.resp(conn, 200, ~s({"id":"sess_123","client_secret":"secret"}))
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      payload = Jason.decode!(body)
+
+      assert payload["model"] == "gpt-4o-realtime-preview"
+      assert payload["voice"] == "alloy"
+      assert payload["modalities"] == ["audio", "text"]
+      assert payload["turn_detection"]["create_response"] == false
+      refute Map.has_key?(payload, "session")
+
+      Plug.Conn.resp(
+        conn,
+        200,
+        ~s({"id":"sess_legacy","model":"gpt-4o-realtime-preview","voice":"alloy","client_secret":{"value":"legacy-secret"}})
+      )
     end)
 
-    assert {:ok, %{"id" => "sess_123"}} =
+    assert {:ok, session} =
              SessionBootstrap.create_ephemeral_session(
                endpoint: "http://localhost:#{bypass.port}/session",
                api_key: "test-key",
                finch: Synaptic.Finch
+             )
+
+    assert session["id"] == "sess_legacy"
+    assert session["client_secret"] == %{"value" => "legacy-secret"}
+  end
+
+  test "SessionBootstrap creates a GA realtime client secret" do
+    bypass = Bypass.open()
+
+    Bypass.expect_once(bypass, "POST", "/session", fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      payload = Jason.decode!(body)
+
+      session = payload["session"]
+      assert session["type"] == "realtime"
+      assert session["model"] == "gpt-realtime-2.1"
+      assert session["output_modalities"] == ["audio"]
+      assert session["audio"]["input"]["transcription"]["model"] == "gpt-realtime-whisper"
+
+      assert session["audio"]["input"]["turn_detection"] == %{
+               "type" => "semantic_vad",
+               "eagerness" => "low",
+               "create_response" => true,
+               "interrupt_response" => true
+             }
+
+      assert session["audio"]["input"]["noise_reduction"] == %{"type" => "near_field"}
+      assert session["audio"]["output"]["voice"] == "marin"
+      assert session["reasoning"] == %{"effort" => "low"}
+      assert [%{"name" => "synaptic_workflow"}] = session["tools"]
+
+      Plug.Conn.resp(
+        conn,
+        200,
+        ~s({"value":"ek_test","expires_at":1756310470,"session":{"id":"sess_123","model":"gpt-realtime-2.1","audio":{"output":{"voice":"marin"}}}})
+      )
+    end)
+
+    assert {:ok, bootstrap} =
+             SessionBootstrap.create_browser_bootstrap(
+               experience: :realtime_2_1,
+               endpoint: "http://localhost:#{bypass.port}/session",
+               api_key: "test-key",
+               finch: Synaptic.Finch
+             )
+
+    assert bootstrap.client_secret == %{"value" => "ek_test"}
+    assert bootstrap.experience == :realtime_2_1
+    assert bootstrap.expires_at == 1_756_310_470
+    assert bootstrap.session_id == "sess_123"
+    assert bootstrap.model == "gpt-realtime-2.1"
+    assert bootstrap.voice == "marin"
+  end
+
+  test "SessionBootstrap supports per-session reasoning experiments" do
+    bypass = Bypass.open()
+
+    Bypass.expect_once(bypass, "POST", "/session", fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+
+      assert get_in(Jason.decode!(body), ["session", "reasoning"]) == %{"effort" => "medium"}
+
+      Plug.Conn.resp(
+        conn,
+        200,
+        ~s({"value":"ek_test","session":{"id":"sess_123","model":"gpt-realtime-2.1"}})
+      )
+    end)
+
+    assert {:ok, %{"value" => "ek_test"}} =
+             SessionBootstrap.create_client_secret(
+               endpoint: "http://localhost:#{bypass.port}/session",
+               api_key: "test-key",
+               finch: Synaptic.Finch,
+               reasoning_effort: "medium"
              )
   end
 end

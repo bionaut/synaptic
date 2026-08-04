@@ -5,7 +5,16 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
   require Logger
 
   alias Phoenix.PubSub
-  alias Synaptic.Voice.{Event, SessionRegistry}
+
+  alias Synaptic.Voice.{
+    CapabilityGateway,
+    Event,
+    Profile,
+    ProfileCompiler,
+    SessionContext,
+    SessionRegistry
+  }
+
   alias Synaptic.Voice.Providers.OpenAI.Realtime.{EventMapper, SessionBootstrap, Sideband}
 
   @default_timeout_ms 30_000
@@ -36,6 +45,7 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
   def inspect_session(pid), do: GenServer.call(pid, :inspect_session)
   def client_connected(pid, meta \\ %{}), do: GenServer.call(pid, {:client_connected, meta})
   def client_disconnected(pid, meta \\ %{}), do: GenServer.call(pid, {:client_disconnected, meta})
+  def approve_capability(pid, name), do: GenServer.call(pid, {:approve_capability, name})
 
   def ingest_provider_event(pid, payload) when is_map(payload),
     do: GenServer.call(pid, {:ingest_provider_event, payload})
@@ -55,11 +65,28 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
 
     config = Application.get_env(:synaptic, Synaptic.Voice.Providers.OpenAI, [])
     realtime_opts = provider_opts(stack_opts, :realtime)
+    experience = resolve_experience(opts, config)
 
     model =
-      Keyword.get(realtime_opts, :model, config[:realtime_model] || "gpt-4o-realtime-preview")
+      Keyword.get(realtime_opts, :model, experience_default(experience, :model, config))
 
-    voice = Keyword.get(realtime_opts, :voice, config[:voice] || "alloy")
+    voice = Keyword.get(realtime_opts, :voice, experience_default(experience, :voice, config))
+
+    response_mode =
+      normalize_response_mode(
+        Keyword.get(opts, :response_mode, experience_default(experience, :response_mode, config))
+      )
+
+    profile = opts |> Keyword.get(:profile, Profile.default()) |> resolve_profile()
+
+    session_context =
+      SessionContext.new!(
+        profile.context_schema,
+        Keyword.get(opts, :session_context, %{}),
+        authorization: Keyword.get(opts, :session_authorization, %{})
+      )
+
+    profile_compilation = ProfileCompiler.compile(profile, session_context)
 
     preferred_language =
       Keyword.get(opts, :preferred_language, config[:preferred_language] || "en")
@@ -80,13 +107,18 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
       )
 
     backchannel_enabled =
-      Keyword.get(opts, :backchannel_enabled, config[:backchannel_enabled] != false)
+      Keyword.get(
+        opts,
+        :backchannel_enabled,
+        response_mode == :orchestrated and config[:backchannel_enabled] != false
+      )
 
     suppress_provider_responses_during_workflow =
       Keyword.get(
         opts,
         :suppress_provider_responses_during_workflow,
-        config[:suppress_provider_responses_during_workflow] != false
+        response_mode == :orchestrated and
+          config[:suppress_provider_responses_during_workflow] != false
       )
 
     sideband_adapter = Keyword.get(opts, :sideband_adapter, config[:sideband_adapter] || Sideband)
@@ -98,6 +130,9 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
       realtime_opts
       |> Keyword.put(:model, model)
       |> Keyword.put(:voice, voice)
+      |> Keyword.put(:experience, experience)
+      |> Keyword.put(:response_mode, response_mode)
+      |> maybe_put_profile_compilation(response_mode, profile_compilation)
       |> Keyword.put_new(:transcription_language, preferred_language)
 
     with {:ok, realtime} <- bootstrap_fun.(bootstrap_opts),
@@ -118,6 +153,13 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
         realtime: realtime,
         model: model,
         voice: voice,
+        experience: experience,
+        response_mode: response_mode,
+        profile: profile,
+        session_context: session_context,
+        capabilities: profile_compilation.capabilities,
+        pending_confirmations: MapSet.new(),
+        approved_capabilities: MapSet.new(),
         preferred_language: preferred_language,
         sideband_adapter: sideband_adapter,
         sideband_pid: sideband_pid,
@@ -141,7 +183,12 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
 
       {:ok,
        state
-       |> emit(:session_started, %{mode: :realtime, stack: stack, transport: state.transport})
+       |> emit(:session_started, %{
+         mode: :realtime,
+         stack: stack,
+         experience: experience,
+         transport: state.transport
+       })
        |> emit(:duplex_state_changed, %{status: :connecting, mode: :realtime})}
     end
   end
@@ -178,6 +225,23 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
     {:stop, reason, :ok, state}
   end
 
+  def handle_call({:approve_capability, name}, _from, state) when is_binary(name) do
+    if MapSet.member?(state.pending_confirmations, name) do
+      state =
+        state
+        |> Map.update!(:pending_confirmations, &MapSet.delete(&1, name))
+        |> Map.update!(:approved_capabilities, &MapSet.put(&1, name))
+        |> emit(:capability_approved, %{name: name, one_shot: true})
+
+      {:reply, :ok, state}
+    else
+      {:reply, {:error, :no_pending_confirmation}, state}
+    end
+  end
+
+  def handle_call({:approve_capability, _name}, _from, state),
+    do: {:reply, {:error, :invalid_capability_name}, state}
+
   @impl true
   def handle_info({:synaptic_voice_realtime_sideband, :provider_event, payload}, state) do
     {:noreply, process_provider_event(payload, state)}
@@ -203,9 +267,9 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
     end
   end
 
-  def handle_info({ref, result}, %{current_task: %{task: %Task{ref: ref}}} = state) do
+  def handle_info({ref, result}, %{current_task: %{task: %Task{ref: ref}} = task_meta} = state) do
     Process.demonitor(ref, [:flush])
-    {:noreply, handle_workflow_result(result, %{state | current_task: nil})}
+    {:noreply, handle_task_result(result, %{state | current_task: nil}, task_meta)}
   end
 
   def handle_info(
@@ -250,6 +314,19 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
     end
   end
 
+  defp maybe_put_profile_compilation(opts, :native, compilation) do
+    instructions =
+      [compilation.instructions, Keyword.get(opts, :instructions)]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join("\n")
+
+    opts
+    |> Keyword.put(:instructions, instructions)
+    |> Keyword.put(:tools, compilation.tools)
+  end
+
+  defp maybe_put_profile_compilation(opts, :orchestrated, _compilation), do: opts
+
   defp public_state(state) do
     %{
       session_id: state.session_id,
@@ -265,9 +342,25 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
         response_active: state.response_active,
         current_task_active: not is_nil(state.current_task),
         last_final_input: state.last_final_input,
-        preferred_language: state.preferred_language
+        preferred_language: state.preferred_language,
+        experience: state.experience,
+        response_mode: state.response_mode,
+        profile: state.profile.id,
+        capabilities: state.capabilities |> Map.keys() |> Enum.sort(),
+        pending_confirmations: state.pending_confirmations |> MapSet.to_list() |> Enum.sort()
       }
     }
+  end
+
+  defp process_provider_event(
+         %{
+           "type" => "response.output_item.done",
+           "item" => %{"type" => "function_call", "name" => name} = item
+         },
+         %{response_mode: :native} = state
+       )
+       when is_binary(name) do
+    on_capability_call(item, state)
   end
 
   defp process_provider_event(payload, state) do
@@ -357,20 +450,27 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
         state =
           state
           |> Map.put(:last_final_input, %{item_id: item_id, text: trimmed, at_ms: now_ms})
-          |> maybe_interrupt()
+          |> maybe_interrupt_for_final_input()
           |> update_status(:thinking)
           |> put_telemetry_mark(:user_final_at_ms, started_at)
           |> emit(:input_final_text, %{text: trimmed})
           |> emit(:duplex_state_changed, %{status: :thinking, mode: :realtime})
 
-        state
-        |> maybe_send_backchannel()
-        |> start_workflow_task(trimmed)
+        if state.response_mode == :native do
+          state
+        else
+          state
+          |> maybe_send_backchannel()
+          |> start_workflow_task(trimmed)
+        end
       end
     end
   end
 
   defp on_final_input(_other, state), do: state
+
+  defp maybe_interrupt_for_final_input(%{response_mode: :native} = state), do: state
+  defp maybe_interrupt_for_final_input(state), do: maybe_interrupt(state)
 
   defp duplicate_final_input?(nil, _item_id, _text, _now_ms), do: false
 
@@ -441,7 +541,7 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
       send_provider_event(state, %{
         "type" => "response.create",
         "response" => %{
-          "modalities" => ["audio", "text"],
+          "output_modalities" => ["audio"],
           "max_output_tokens" => 64,
           "instructions" =>
             [
@@ -462,7 +562,75 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
     |> emit(:assistant_response_started, %{source: :backchannel})
   end
 
-  defp start_workflow_task(state, input_text) do
+  defp on_capability_call(%{"call_id" => call_id, "name" => name} = item, state)
+       when is_binary(call_id) and is_binary(name) do
+    tool_call = %{call_id: call_id, name: name}
+
+    with %{} = capability <- Map.get(state.capabilities, name),
+         {:ok, arguments} <- decode_call_arguments(item),
+         true <- is_nil(state.current_task) do
+      approved? = MapSet.member?(state.approved_capabilities, name)
+
+      state =
+        state
+        |> Map.update!(:approved_capabilities, &MapSet.delete(&1, name))
+        |> Map.put(:response_active, false)
+        |> update_status(:thinking)
+        |> emit(:capability_called, %{name: name, risk: capability.risk})
+
+      case capability.executor do
+        :workflow ->
+          with {:ok, query} <- workflow_query(arguments, state) do
+            start_workflow_task(state, query, tool_call)
+          else
+            {:error, reason} -> send_capability_error(state, tool_call, reason)
+          end
+
+        :direct ->
+          start_capability_task(state, capability, arguments, tool_call, approved?)
+      end
+    else
+      nil ->
+        send_capability_error(state, tool_call, :unknown_capability)
+
+      false ->
+        send_capability_error(state, tool_call, :capability_already_running)
+
+      {:error, reason} ->
+        send_capability_error(state, tool_call, reason)
+    end
+  end
+
+  defp on_capability_call(_item, state) do
+    emit(state, :session_error, %{source: :provider, reason: :invalid_capability_call})
+  end
+
+  defp decode_call_arguments(%{"arguments" => arguments}) when is_binary(arguments) do
+    case Jason.decode(arguments) do
+      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+      {:ok, _decoded} -> {:error, :capability_arguments_must_be_an_object}
+      {:error, _reason} -> {:error, :invalid_capability_arguments}
+    end
+  end
+
+  defp decode_call_arguments(_item), do: {:ok, %{}}
+
+  defp workflow_query(%{"query" => query}, _state) when is_binary(query) do
+    case String.trim(query) do
+      "" -> {:error, :missing_workflow_query}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp workflow_query(_arguments, state), do: last_input_query(state)
+
+  defp last_input_query(%{last_final_input: %{text: text}})
+       when is_binary(text) and text != "",
+       do: {:ok, text}
+
+  defp last_input_query(_state), do: {:error, :missing_workflow_query}
+
+  defp start_workflow_task(state, input_text, tool_call \\ nil) do
     timeout_ms = state.workflow_timeout_ms
     run_id = state.run_id
 
@@ -479,11 +647,73 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
     task = Task.async(fn -> run_workflow_turn(run_id, input_text, timeout_ms) end)
 
     state
-    |> Map.put(:current_task, %{task: task, input: input_text})
+    |> Map.put(:current_task, %{
+      kind: :workflow,
+      task: task,
+      input: input_text,
+      tool_call: tool_call
+    })
     |> emit(:workflow_started, %{input: input_text})
   end
 
-  defp handle_workflow_result({:ok, answer}, state) do
+  defp start_capability_task(state, capability, arguments, tool_call, approved?) do
+    context = state.session_context
+    policy = state.profile.security_policy
+
+    task =
+      Task.async(fn ->
+        CapabilityGateway.execute(capability, arguments, context, policy, confirmed: approved?)
+      end)
+
+    state
+    |> Map.put(:current_task, %{
+      kind: :capability,
+      task: task,
+      capability: capability,
+      arguments: arguments,
+      tool_call: tool_call
+    })
+    |> emit(:capability_started, %{name: capability.name})
+  end
+
+  defp handle_task_result(result, state, %{kind: :capability} = task_meta),
+    do: handle_capability_result(result, state, task_meta)
+
+  defp handle_task_result(result, state, task_meta),
+    do: handle_workflow_result(result, state, task_meta)
+
+  defp handle_capability_result(
+         {:confirmation_required, details},
+         state,
+         %{capability: capability, tool_call: tool_call}
+       ) do
+    state
+    |> Map.update!(:pending_confirmations, &MapSet.put(&1, capability.name))
+    |> send_confirmation_required(tool_call, details)
+  end
+
+  defp handle_capability_result(
+         {:ok, result},
+         state,
+         %{capability: capability, tool_call: tool_call}
+       ) do
+    send_capability_result(state, tool_call, capability, result)
+  end
+
+  defp handle_capability_result(
+         {:error, reason},
+         state,
+         %{tool_call: tool_call}
+       ) do
+    send_capability_error(state, tool_call, reason)
+  end
+
+  defp handle_workflow_result({:ok, answer}, state, %{tool_call: tool_call})
+       when is_map(tool_call) do
+    send_capability_result(state, tool_call, Map.get(state.capabilities, tool_call.name), answer)
+  end
+
+  defp handle_workflow_result({:ok, answer}, state, _task_meta) do
     Logger.debug(
       "[voice.realtime] workflow_ok session=#{state.session_id} run=#{state.run_id} answer_chars=#{String.length(answer || "")}"
     )
@@ -511,7 +741,7 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
       send_provider_event(state, %{
         "type" => "response.create",
         "response" => %{
-          "modalities" => ["audio", "text"],
+          "output_modalities" => ["audio"],
           "max_output_tokens" => 800,
           "instructions" =>
             [
@@ -534,7 +764,12 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
     |> emit(:duplex_state_changed, %{status: :speaking, mode: :realtime})
   end
 
-  defp handle_workflow_result({:error, reason}, state) do
+  defp handle_workflow_result({:error, reason}, state, %{tool_call: tool_call})
+       when is_map(tool_call) do
+    send_capability_error(state, tool_call, reason)
+  end
+
+  defp handle_workflow_result({:error, reason}, state, _task_meta) do
     Logger.error(
       "[voice.realtime] workflow_error session=#{state.session_id} run=#{state.run_id} reason=#{inspect(reason)}"
     )
@@ -544,6 +779,129 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
     |> emit(:session_error, %{source: :workflow, reason: reason})
     |> update_status(:listening)
     |> emit(:duplex_state_changed, %{status: :listening, mode: :realtime})
+  end
+
+  defp send_capability_result(state, tool_call, capability, result) do
+    Logger.debug(
+      "[voice.realtime] capability_ok session=#{state.session_id} run=#{state.run_id} name=#{tool_call.name}"
+    )
+
+    _ =
+      send_provider_event(state, %{
+        "type" => "conversation.item.create",
+        "item" => %{
+          "type" => "function_call_output",
+          "call_id" => tool_call.call_id,
+          "output" => Jason.encode!(%{ok: true, result: json_safe(result)})
+        }
+      })
+
+    _ =
+      send_provider_event(state, %{
+        "type" => "response.create",
+        "response" => %{
+          "output_modalities" => ["audio"],
+          "instructions" =>
+            [
+              language_instruction(state),
+              "Use the successful #{tool_call.name} capability result to answer the user.",
+              "Preserve names, numbers, links, and other factual details.",
+              capability_response_instruction(capability),
+              "Phrase the answer naturally in your own conversational voice; do not read raw tool output verbatim."
+            ]
+            |> Enum.join("\n")
+        }
+      })
+
+    state
+    |> Map.put(:response_active, true)
+    |> update_status(:speaking)
+    |> emit(:capability_completed, %{name: tool_call.name})
+    |> emit(:assistant_response_started, %{source: :capability})
+    |> emit(:duplex_state_changed, %{status: :speaking, mode: :realtime})
+  end
+
+  defp send_capability_error(state, tool_call, reason) do
+    Logger.error(
+      "[voice.realtime] capability_error session=#{state.session_id} run=#{state.run_id} name=#{tool_call.name} reason=#{inspect(reason)}"
+    )
+
+    _ =
+      send_provider_event(state, %{
+        "type" => "conversation.item.create",
+        "item" => %{
+          "type" => "function_call_output",
+          "call_id" => tool_call.call_id,
+          "output" => Jason.encode!(%{ok: false, error: capability_error_code(reason)})
+        }
+      })
+
+    _ =
+      send_provider_event(state, %{
+        "type" => "response.create",
+        "response" => %{
+          "output_modalities" => ["audio"],
+          "instructions" =>
+            [
+              language_instruction(state),
+              "Briefly explain that #{tool_call.name} could not complete the request.",
+              "Ask the user whether they want to retry or provide more detail."
+            ]
+            |> Enum.join("\n")
+        }
+      })
+
+    state
+    |> Map.put(:response_active, true)
+    |> update_status(:speaking)
+    |> emit(:capability_failed, %{name: tool_call.name, reason: reason})
+    |> emit(:assistant_response_started, %{source: :capability_error})
+    |> emit(:duplex_state_changed, %{status: :speaking, mode: :realtime})
+  end
+
+  defp send_confirmation_required(state, tool_call, details) do
+    _ =
+      send_provider_event(state, %{
+        "type" => "conversation.item.create",
+        "item" => %{
+          "type" => "function_call_output",
+          "call_id" => tool_call.call_id,
+          "output" =>
+            Jason.encode!(%{
+              ok: false,
+              confirmation_required: true,
+              capability: tool_call.name,
+              risk: details.risk
+            })
+        }
+      })
+
+    _ =
+      send_provider_event(state, %{
+        "type" => "response.create",
+        "response" => %{
+          "output_modalities" => ["audio"],
+          "instructions" =>
+            [
+              language_instruction(state),
+              "Ask the user for explicit confirmation before using #{tool_call.name}.",
+              "Clearly summarize the intended action. Do not claim it has run.",
+              "After the application records confirmation, retry the capability once."
+            ]
+            |> Enum.join("\n")
+        }
+      })
+
+    state
+    |> Map.put(:response_active, true)
+    |> update_status(:speaking)
+    |> emit(:capability_confirmation_required, %{
+      name: tool_call.name,
+      risk: details.risk,
+      one_shot: true
+    })
+    |> emit(:assistant_response_started, %{source: :capability_confirmation})
+    |> emit(:duplex_state_changed, %{status: :speaking, mode: :realtime})
   end
 
   defp run_workflow_turn(run_id, input_text, timeout_ms) do
@@ -671,7 +1029,15 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
 
   defp public_transport(realtime) when is_map(realtime) do
     realtime
-    |> Map.take([:provider, :model, :voice, :session_id, :expires_at, :client_secret])
+    |> Map.take([
+      :provider,
+      :experience,
+      :model,
+      :voice,
+      :session_id,
+      :expires_at,
+      :client_secret
+    ])
   end
 
   defp choose_backchannel_phrase([]), do: "One moment while I check that."
@@ -710,6 +1076,92 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
 
   defp suppress_provider_response?(_state), do: false
 
+  defp resolve_profile(%Profile{} = profile), do: Profile.new!(profile)
+
+  defp resolve_profile(module) when is_atom(module) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :profile, 0) do
+      module.profile() |> Profile.new!()
+    else
+      raise ArgumentError, "voice profile module #{inspect(module)} must implement profile/0"
+    end
+  end
+
+  defp resolve_profile(attrs), do: Profile.new!(attrs)
+
+  defp resolve_experience(opts, config) do
+    requested = Keyword.get(opts, :experience)
+
+    cond do
+      requested in [:legacy, "legacy"] ->
+        :legacy
+
+      requested in [:realtime_2_1, "realtime_2_1"] ->
+        :realtime_2_1
+
+      not is_nil(requested) ->
+        raise ArgumentError,
+              "unsupported OpenAI realtime experience: #{inspect(requested)}"
+
+      not is_nil(Keyword.get(opts, :profile)) ->
+        :realtime_2_1
+
+      config[:default_experience] == :realtime_2_1 ->
+        :realtime_2_1
+
+      true ->
+        :legacy
+    end
+  end
+
+  defp experience_default(:legacy, :model, config),
+    do: config[:realtime_model] || "gpt-4o-realtime-preview"
+
+  defp experience_default(:legacy, :voice, config), do: config[:voice] || "alloy"
+
+  defp experience_default(:legacy, :response_mode, config),
+    do: config[:realtime_response_mode] || :orchestrated
+
+  defp experience_default(:realtime_2_1, :model, config),
+    do: config[:realtime_2_1_model] || "gpt-realtime-2.1"
+
+  defp experience_default(:realtime_2_1, :voice, config),
+    do: config[:realtime_2_1_voice] || "marin"
+
+  defp experience_default(:realtime_2_1, :response_mode, config),
+    do: config[:realtime_2_1_response_mode] || :native
+
+  defp capability_response_instruction(nil),
+    do: "Use only the facts returned by the capability."
+
+  defp capability_response_instruction(capability) do
+    case capability.limitations do
+      [] -> "Use only the facts returned by the capability."
+      limitations -> "Respect these limitations: #{Enum.join(limitations, "; ")}."
+    end
+  end
+
+  defp capability_error_code(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp capability_error_code({reason, _details}) when is_atom(reason), do: Atom.to_string(reason)
+  defp capability_error_code(_reason), do: "capability_failed"
+
+  defp json_safe(value) when is_map(value) do
+    value
+    |> Enum.map(fn {key, nested} -> {to_string(key), json_safe(nested)} end)
+    |> Map.new()
+  end
+
+  defp json_safe(value) when is_list(value), do: Enum.map(value, &json_safe/1)
+  defp json_safe(value) when is_binary(value), do: value
+  defp json_safe(value) when is_number(value), do: value
+  defp json_safe(value) when is_boolean(value), do: value
+  defp json_safe(nil), do: nil
+  defp json_safe(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp json_safe(value) when is_tuple(value),
+    do: value |> Tuple.to_list() |> Enum.map(&json_safe/1)
+
+  defp json_safe(value), do: inspect(value, limit: 100, printable_limit: 2_000)
+
   defp truncate_for_log(text, max) when is_binary(text) and is_integer(max) and max > 0 do
     if String.length(text) <= max, do: text, else: String.slice(text, 0, max) <> "..."
   end
@@ -724,4 +1176,8 @@ defmodule Synaptic.Voice.Sessions.Realtime.OpenAI do
       realtime_provider: state.stack.realtime
     }
   end
+
+  defp normalize_response_mode(:orchestrated), do: :orchestrated
+  defp normalize_response_mode("orchestrated"), do: :orchestrated
+  defp normalize_response_mode(_), do: :native
 end

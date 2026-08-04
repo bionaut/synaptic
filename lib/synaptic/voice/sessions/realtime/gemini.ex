@@ -43,6 +43,7 @@ defmodule Synaptic.Voice.Sessions.Realtime.Gemini do
   def client_connected(_pid, _meta), do: {:error, :unsupported_for_mode}
   def client_disconnected(_pid, _meta), do: {:error, :unsupported_for_mode}
   def ingest_provider_event(_pid, _payload), do: {:error, :unsupported_for_mode}
+  def approve_capability(_pid, _name), do: {:error, :unsupported_for_mode}
 
   @impl true
   def init(opts) do

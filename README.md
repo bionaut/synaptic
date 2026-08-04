@@ -37,7 +37,8 @@ one of two ways:
    ```elixir
    config :synaptic, Synaptic.Tools.OpenAI,
      api_key: System.fetch_env!("OPENAI_API_KEY"),
-     model: "gpt-4o-mini" # or whichever you prefer
+     model: "gpt-5.6-luna", # recommended for new reasoning workloads
+     reasoning_effort: "low"
    ```
 
 You can also swap adapters by configuring `Synaptic.Tools`:
@@ -60,21 +61,21 @@ config :synaptic, Synaptic.Tools,
   llm_adapter: Synaptic.Tools.OpenAI,
   agents: [
     # Fast, cost-effective model for simple tasks
-    mini: [model: "gpt-4o-mini", temperature: 0.3],
+    luna: [model: "gpt-5.6-luna", reasoning_effort: "low"],
     # More capable model for complex reasoning
-    turbo: [model: "gpt-4o-turbo", temperature: 0.7],
+    terra: [model: "gpt-5.6-terra", reasoning_effort: "medium"],
     # Most capable model for critical tasks
-    o1: [model: "o1-preview", temperature: 0.1]
+    sol: [model: "gpt-5.6-sol", reasoning_effort: "high"]
   ]
 
 # In your workflow - use the agent name
-Synaptic.Tools.chat(messages, agent: :mini, tools: [tool])
-Synaptic.Tools.chat(messages, agent: :turbo, tools: [tool])
+Synaptic.Tools.chat(messages, agent: :luna, tools: [tool])
+Synaptic.Tools.chat(messages, agent: :terra, tools: [tool])
 ```
 
 Benefits of named agents:
 
-- **Semantic names**: `agent: :mini` is clearer than `model: "gpt-4o-mini"`
+- **Semantic names**: `agent: :luna` is clearer than `model: "gpt-5.6-luna"`
 - **Bundle multiple settings**: model, temperature, adapter, etc. in one place
 - **Centralized configuration**: change the model in config, not scattered across code
 - **Reusable**: define once, use throughout your workflows
@@ -85,8 +86,8 @@ Pass the model name directly to `chat/2` for one-off usage:
 
 ```elixir
 # Use a specific model directly
-Synaptic.Tools.chat(messages, model: "gpt-4o-mini", tools: [tool])
-Synaptic.Tools.chat(messages, model: "gpt-4o-turbo", temperature: 0.8, tools: [tool])
+Synaptic.Tools.chat(messages, model: "gpt-5.6-luna", reasoning_effort: "low", tools: [tool])
+Synaptic.Tools.chat(messages, model: "gpt-5.6-terra", reasoning_effort: "medium", tools: [tool])
 ```
 
 #### Model resolution priority
@@ -96,13 +97,13 @@ When both are specified, the system resolves options in this order:
 1. Direct options passed to `chat/2` (e.g., `model:`, `temperature:`)
 2. Options from the named agent (if `agent:` is specified)
 3. Global defaults from `Synaptic.Tools.OpenAI` config
-4. Hardcoded fallback: `"gpt-4o-mini"`
+4. Backward-compatible hardcoded fallback: `"gpt-4o-mini"`
 
 This means you can override agent settings per call:
 
 ```elixir
-# Uses "gpt-4o-turbo" from :turbo agent, but overrides temperature to 0.5
-Synaptic.Tools.chat(messages, agent: :turbo, temperature: 0.5)
+# Uses "gpt-5.6-terra" from :terra agent, but lowers reasoning effort
+Synaptic.Tools.chat(messages, agent: :terra, reasoning_effort: "low")
 ```
 
 You can also specify `adapter:` inside an agent definition if some agents need a different provider altogether.
@@ -321,8 +322,8 @@ llm_router :decide_next,
   ],
   prompt: "Choose the single best next step based on the state.",
   system_prompt: "You are a router. Reply with JSON.",
-  model: "gpt-4o-mini",
-  temperature: 0
+  model: "gpt-5.6-luna",
+  reasoning_effort: "low"
 do
   %{
     extracted_email: Map.get(context, :extracted_email),
@@ -1472,6 +1473,10 @@ for integrating audio input/output into existing workflows.
 For full API, architecture, config, telemetry, and integration details, see
 [`docs/voice-guide.md`](docs/voice-guide.md).
 
+For code-defined personas, concrete capabilities, typed session context, and
+confirmation-aware execution, see
+[`docs/voice-profiles.md`](docs/voice-profiles.md).
+
 ### Quickstart
 
 ```elixir
@@ -1504,3 +1509,47 @@ Important events:
 Default mode is full duplex (`mode: :duplex`), with `mode: :turn_based` as a
 fallback. Realtime is available through the same public module with
 `mode: :realtime` and `provider: :openai | :gemini`.
+
+### Recommended OpenAI Realtime 2.1 session
+
+New OpenAI realtime applications should select the versioned experience and a
+code-defined profile:
+
+```elixir
+{:ok, session} =
+  Synaptic.Voice.start_session(MyWorkflow, %{},
+    provider: :openai,
+    mode: :realtime,
+    experience: :realtime_2_1,
+    profile: MyApp.Voice.AssistantProfile,
+    session_context: %{customer_name: "Maya"},
+    session_authorization: %{capabilities: :all, scopes: ["calendar:read"]}
+  )
+```
+
+`experience: :realtime_2_1` selects `gpt-realtime-2.1`, Marin,
+`gpt-realtime-whisper`, native responses, semantic VAD with low eagerness,
+near-field noise reduction, and low reasoning unless explicitly overridden.
+Supplying `profile:` implies this experience, although keeping the option
+visible is recommended in application code.
+
+### Upgrade compatibility
+
+Existing calls that omit both `experience:` and `profile:` remain on the
+legacy contract: orchestrated responses, the existing workflow-on-every-turn
+behavior, configured legacy model and voice defaults, and the original
+ephemeral-session bootstrap shape. Existing per-session model, voice,
+instructions, transcription language, response mode, endpoint, and provider
+options continue to take precedence.
+
+The compatibility boundary is intentional:
+
+- Existing applications can upgrade without silently changing conversation
+  ownership.
+- New applications opt into the recommended Realtime 2.1 experience.
+- `SessionBootstrap.create_ephemeral_session/1` retains the legacy endpoint,
+  request, and return contract.
+- The new `SessionBootstrap.create_client_secret/1` uses the GA client-secret
+  contract.
+- Set `OPENAI_REALTIME_EXPERIENCE=realtime_2_1` only when an application wants
+  to migrate all unversioned OpenAI realtime sessions at once.

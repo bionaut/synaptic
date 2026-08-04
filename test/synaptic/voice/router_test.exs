@@ -234,7 +234,7 @@ defmodule Synaptic.Voice.RouterTest do
                  {:ok,
                   %{
                     client_secret: %{"value" => "test-secret"},
-                    model: "gpt-4o-realtime-preview",
+                    model: "gpt-realtime-2.1",
                     voice: "alloy",
                     session_id: "sess_test"
                   }}

@@ -12,7 +12,10 @@ Realtime has two distinct frontend setups:
 
 OpenAI realtime frontend:
 - browser establishes WebRTC session with OpenAI
-- backend manages sideband orchestration and emits outbound provider events
+- Realtime 2.1 owns normal turns when the backend selects
+  `experience: :realtime_2_1`
+- legacy backend sessions retain workflow-owned conversation turns
+- backend handles sideband workflow calls and emits tool outputs
 - frontend forwards `realtime_send` payloads to provider data channel
 
 Gemini realtime frontend:
@@ -38,14 +41,17 @@ Track for both providers:
 
 ## 3. OpenAI realtime frontend flow
 
-1. call backend `voice_connect` with `provider=openai`, `mode=realtime`
+1. call backend `voice_connect` with `provider=openai`, `mode=realtime`, and the
+   desired experience; new applications should request `realtime_2_1`
 2. receive transport bootstrap (ephemeral secret/session metadata)
 3. create `RTCPeerConnection`
 4. get mic stream and attach track
 5. create data channel for provider events
-6. exchange SDP with OpenAI realtime endpoint
+6. POST the SDP to `https://api.openai.com/v1/realtime/calls`, authenticated
+   with `transport.client_secret.value`, and apply the returned SDP answer
 7. notify backend with `realtime_client_connected`
-8. for provider events received client-side, send to backend via `realtime_provider_event`
+8. for provider events received client-side, send to backend via `realtime_provider_event`;
+   include `response.output_item.done` so function calls reach Synaptic
 9. on server `realtime_send`, forward event to provider data channel
 10. on disconnect/failure, notify backend `realtime_client_disconnected`
 

@@ -30,9 +30,10 @@ defmodule Synaptic.Tools.OpenAI do
     body =
       %{
         model: model(opts),
-        messages: messages,
-        temperature: Keyword.get(opts, :temperature, 0)
+        messages: messages
       }
+      |> maybe_put_temperature(opts)
+      |> maybe_put_reasoning_effort(opts)
       |> maybe_put_tools(opts)
       |> maybe_put_response_format(response_format)
 
@@ -63,9 +64,10 @@ defmodule Synaptic.Tools.OpenAI do
       %{
         model: model(opts),
         messages: messages,
-        temperature: Keyword.get(opts, :temperature, 0),
         stream: true
       }
+      |> maybe_put_temperature(opts)
+      |> maybe_put_reasoning_effort(opts)
 
     headers =
       [
@@ -178,6 +180,25 @@ defmodule Synaptic.Tools.OpenAI do
 
   defp model(opts) do
     opts[:model] || config(opts)[:model] || "gpt-4o-mini"
+  end
+
+  defp maybe_put_temperature(body, opts) do
+    if String.starts_with?(body.model, "gpt-5.6") do
+      body
+    else
+      Map.put(body, :temperature, Keyword.get(opts, :temperature, 0))
+    end
+  end
+
+  defp maybe_put_reasoning_effort(body, opts) do
+    effort = Keyword.get(opts, :reasoning_effort, config(opts)[:reasoning_effort])
+
+    if String.starts_with?(body.model, "gpt-5.6") and
+         effort in ["none", "low", "medium", "high", "xhigh", "max"] do
+      Map.put(body, :reasoning_effort, effort)
+    else
+      body
+    end
   end
 
   defp maybe_put_tools(body, opts) do

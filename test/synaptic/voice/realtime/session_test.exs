@@ -51,19 +51,29 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
   end
 
   test "start_session returns realtime bootstrap payload" do
+    owner = self()
+
     assert {:ok, %{session_id: session_id, run_id: run_id, transport: transport, mode: :realtime}} =
              Synaptic.Voice.start_session(RealtimeWorkflow, %{},
                mode: :realtime,
-               webrtc_bootstrap_fun: fn _opts ->
+               webrtc_bootstrap_fun: fn opts ->
+                 send(owner, {:legacy_bootstrap_opts, opts})
+
                  {:ok,
                   %{
                     client_secret: %{"value" => "test-secret"},
-                    model: "gpt-4o-realtime-preview",
-                    voice: "alloy",
+                    model: opts[:model],
+                    voice: opts[:voice],
                     session_id: "sess_test"
                   }}
                end
              )
+
+    assert_receive {:legacy_bootstrap_opts, opts}
+    assert opts[:experience] == :legacy
+    assert opts[:response_mode] == :orchestrated
+    assert opts[:model] == "gpt-4o-realtime-preview"
+    assert opts[:voice] == "alloy"
 
     assert is_binary(session_id)
     assert is_binary(run_id)
@@ -73,15 +83,77 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
     _ = Synaptic.stop(run_id, :test_cleanup)
   end
 
+  test "Realtime 2.1 experience selects new defaults without changing legacy defaults" do
+    owner = self()
+
+    assert {:ok, %{session_id: session_id, run_id: run_id}} =
+             Synaptic.Voice.start_session(RealtimeWorkflow, %{},
+               mode: :realtime,
+               experience: :realtime_2_1,
+               webrtc_bootstrap_fun: fn opts ->
+                 send(owner, {:realtime_2_1_bootstrap_opts, opts})
+
+                 {:ok,
+                  %{
+                    client_secret: %{"value" => "test-secret"},
+                    model: opts[:model],
+                    voice: opts[:voice],
+                    session_id: "sess_test"
+                  }}
+               end
+             )
+
+    assert_receive {:realtime_2_1_bootstrap_opts, opts}
+    assert opts[:experience] == :realtime_2_1
+    assert opts[:response_mode] == :native
+    assert opts[:model] == "gpt-realtime-2.1"
+    assert opts[:voice] == "marin"
+
+    assert :ok = Synaptic.Voice.stop_session(session_id, :normal)
+    _ = Synaptic.stop(run_id, :test_cleanup)
+  end
+
+  test "start_session forwards per-session model and reasoning experiments" do
+    owner = self()
+
+    assert {:ok, %{session_id: session_id, run_id: run_id, transport: transport}} =
+             Synaptic.Voice.start_session(RealtimeWorkflow, %{},
+               mode: :realtime,
+               provider_opts: [
+                 realtime: [model: "gpt-realtime-2.1-mini", reasoning_effort: "low"]
+               ],
+               webrtc_bootstrap_fun: fn opts ->
+                 send(owner, {:bootstrap_opts, opts})
+
+                 {:ok,
+                  %{
+                    client_secret: %{"value" => "test-secret"},
+                    model: opts[:model],
+                    voice: opts[:voice],
+                    session_id: "sess_test"
+                  }}
+               end
+             )
+
+    assert_receive {:bootstrap_opts, opts}
+    assert opts[:model] == "gpt-realtime-2.1-mini"
+    assert opts[:reasoning_effort] == "low"
+    assert transport.model == "gpt-realtime-2.1-mini"
+
+    assert :ok = Synaptic.Voice.stop_session(session_id, :normal)
+    _ = Synaptic.stop(run_id, :test_cleanup)
+  end
+
   test "final transcript triggers backchannel and workflow response" do
     assert {:ok, %{session_id: session_id, run_id: run_id}} =
              Synaptic.Voice.start_session(RealtimeWorkflow, %{},
                mode: :realtime,
+               response_mode: :orchestrated,
                webrtc_bootstrap_fun: fn _opts ->
                  {:ok,
                   %{
                     client_secret: %{"value" => "test-secret"},
-                    model: "gpt-4o-realtime-preview",
+                    model: "gpt-realtime-2.1",
                     voice: "alloy",
                     session_id: "sess_test"
                   }}
@@ -111,12 +183,13 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
     assert {:ok, %{session_id: session_id, run_id: run_id}} =
              Synaptic.Voice.start_session(SlowRealtimeWorkflow, %{},
                mode: :realtime,
+               response_mode: :orchestrated,
                backchannel_enabled: false,
                webrtc_bootstrap_fun: fn _opts ->
                  {:ok,
                   %{
                     client_secret: %{"value" => "test-secret"},
-                    model: "gpt-4o-realtime-preview",
+                    model: "gpt-realtime-2.1",
                     voice: "alloy",
                     session_id: "sess_test"
                   }}
@@ -141,7 +214,7 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
 
     :ok =
       Synaptic.Voice.ingest_provider_event(session_id, %{
-        "type" => "response.audio_transcript.done",
+        "type" => "response.output_audio_transcript.done",
         "transcript" => "I'm sorry, I can't look that up right now."
       })
 
@@ -170,12 +243,13 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
     assert {:ok, %{session_id: session_id, run_id: run_id}} =
              Synaptic.Voice.start_session(SlowRealtimeWorkflow, %{},
                mode: :realtime,
+               response_mode: :orchestrated,
                backchannel_enabled: false,
                webrtc_bootstrap_fun: fn _opts ->
                  {:ok,
                   %{
                     client_secret: %{"value" => "test-secret"},
-                    model: "gpt-4o-realtime-preview",
+                    model: "gpt-realtime-2.1",
                     voice: "alloy",
                     session_id: "sess_test"
                   }}
@@ -213,14 +287,14 @@ defmodule Synaptic.Voice.Realtime.SessionTest do
                  {:ok,
                   %{
                     client_secret: %{"value" => "test-secret"},
-                    model: "gpt-4o-realtime-preview",
+                    model: "gpt-realtime-2.1",
                     voice: "alloy",
                     session_id: "sess_test"
                   }}
                end
              )
 
-    assert realtime.model == "gpt-4o-realtime-preview"
+    assert realtime.model == "gpt-realtime-2.1"
 
     :ok = Synaptic.Voice.subscribe_session(session_id)
     :ok = Synaptic.Voice.client_connected(session_id)

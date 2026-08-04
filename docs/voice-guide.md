@@ -22,6 +22,9 @@ For frontend-only integration details (event wiring, UI states, recorder/playbac
 - Turn-based frontend: [`docs/voice_frontend/turn_based_frontend_setup.md`](docs/voice_frontend/turn_based_frontend_setup.md)
 - Realtime frontend: [`docs/voice_frontend/realtime_frontend_setup.md`](docs/voice_frontend/realtime_frontend_setup.md)
 
+For reusable personas, concrete tools, typed session context, and deterministic
+authorization, see [`docs/voice-profiles.md`](docs/voice-profiles.md).
+
 ---
 
 ## What the framework provides
@@ -53,7 +56,8 @@ Add `synaptic` to your project. Synaptic’s application starts its own PubSub, 
 
 ```elixir
 # Tools (for workflow LLM calls)
-config :synaptic, Synaptic.Tools.OpenAI, model: "gpt-4o-mini"
+config :synaptic, Synaptic.Tools.OpenAI,
+  model: "gpt-4o-mini"
 
 config :synaptic, Synaptic.Voice,
   default_mode: :duplex,
@@ -61,11 +65,21 @@ config :synaptic, Synaptic.Voice,
   audio_format_default: %{encoding: :pcm16le, sample_rate_hz: 24_000, channels: 1}
 
 config :synaptic, Synaptic.Voice.Providers.OpenAI,
+  default_experience: :legacy,
   stt_model: "gpt-4o-mini-transcribe",
   tts_model: "gpt-4o-mini-tts",
   tts_audio_format: "pcm16",
   realtime_model: "gpt-4o-realtime-preview",
-  voice: "alloy"
+  realtime_response_mode: :orchestrated,
+  voice: "alloy",
+  realtime_2_1_model: "gpt-realtime-2.1",
+  realtime_2_1_transcription_model: "gpt-realtime-whisper",
+  realtime_2_1_reasoning_effort: "low",
+  realtime_2_1_response_mode: :native,
+  realtime_2_1_turn_detection: "semantic_vad",
+  realtime_2_1_turn_eagerness: "low",
+  realtime_2_1_noise_reduction: "near_field",
+  realtime_2_1_voice: "marin"
 
 config :synaptic, Synaptic.Voice.Providers.Gemini,
   stt_model: "gemini-2.5-flash",
@@ -86,7 +100,9 @@ config :synaptic, Synaptic.Voice.Providers.ElevenLabs,
 ```elixir
 if api_key = System.get_env("OPENAI_API_KEY") do
   config :synaptic, Synaptic.Tools.OpenAI, api_key: api_key
-  config :synaptic, Synaptic.Voice.Providers.OpenAI, api_key: api_key
+  config :synaptic, Synaptic.Voice.Providers.OpenAI,
+    api_key: api_key,
+    realtime_2_1_model: System.get_env("OPENAI_REALTIME_2_1_MODEL", "gpt-realtime-2.1")
 end
 
 if gemini_api_key = System.get_env("GEMINI_API_KEY") do
@@ -110,7 +126,13 @@ Realtime has two provider patterns:
 Create sessions with:
 
 ```elixir
-Synaptic.Voice.start_session(MyWorkflow, %{}, provider: :openai, mode: :realtime)
+Synaptic.Voice.start_session(MyWorkflow, %{},
+  provider: :openai,
+  mode: :realtime,
+  experience: :realtime_2_1,
+  profile: MyApp.Voice.AssistantProfile
+)
+
 Synaptic.Voice.start_session(MyWorkflow, %{}, provider: :gemini, mode: :realtime)
 ```
 
@@ -119,6 +141,50 @@ Use `transport` from the return payload to bootstrap client behavior:
 - OpenAI transport includes provider bootstrap fields like `client_secret`, `expires_at`, `model`, `voice`.
 - Gemini transport describes relay expectations (`audio_config`) and does not expose provider credentials to clients.
 
+New OpenAI applications should use `experience: :realtime_2_1`. It selects
+`gpt-realtime-2.1`, Marin, native responses, semantic VAD at low eagerness,
+near-field noise reduction, `gpt-realtime-whisper`, and low reasoning. Override
+the model globally with `OPENAI_REALTIME_2_1_MODEL`, or per session:
+
+```elixir
+Synaptic.Voice.start_session(MyWorkflow, %{},
+  provider: :openai,
+  mode: :realtime,
+  experience: :realtime_2_1,
+  provider_opts: [
+    realtime: [model: "gpt-realtime-2.1-mini", reasoning_effort: "low"]
+  ]
+)
+```
+
+Supported reasoning-effort experiments are `minimal`, `low`, `medium`, `high`,
+and `xhigh`. If omitted, OpenAI's model default is used.
+
+In the Realtime 2.1 experience, native response mode is the default. Realtime
+owns normal conversation and calls only the concrete capabilities compiled from
+the session's voice profile. Configure `gpt-5.6-luna` explicitly for workflows
+that should use Luna for routing, reasoning, or additional tool calls. Results
+are sent back to the same Realtime session so the audio model can phrase and
+speak them naturally.
+Set `response_mode: :orchestrated` (or
+per-session configuration) to keep the deterministic
+transcript -> workflow -> spoken-readout path for A/B comparisons.
+
+### Compatibility behavior
+
+Existing OpenAI realtime calls that omit both `experience:` and `profile:` use
+`:legacy`. This preserves orchestrated workflow-on-every-turn behavior, the
+configured legacy model and voice, `server_vad`, and the original ephemeral
+session contract. Explicit `experience:` wins; otherwise a profile implies
+`:realtime_2_1`. Applications may set `default_experience: :realtime_2_1` only
+after reviewing all unversioned callers.
+
+`SessionBootstrap.create_ephemeral_session/1` retains its original endpoint,
+flat request schema, and returned session shape. The new
+`create_client_secret/1` function uses the GA client-secret endpoint and nested
+session schema. `create_browser_bootstrap/1` chooses the correct path from the
+resolved experience and exposes a stable transport map to application code.
+
 ### Realtime operation matrix
 
 - OpenAI realtime supports: `client_connected/2`, `client_disconnected/2`, `ingest_provider_event/2`.
@@ -126,6 +192,12 @@ Use `transport` from the return payload to bootstrap client behavior:
 - Unsupported operations return `{:error, :unsupported_for_mode}`.
 
 ### Workflow design for realtime
+
+In native mode, treat the workflow as an on-demand tool: accept the delegated
+query, use the application-configured reasoning model and tools, and return
+factual results for Realtime 2.1 to express naturally.
+
+The following every-turn workflow rules apply to orchestrated mode:
 
 - The realtime sideband resumes the workflow with the **final user transcript**. The default mapping sends `%{human_input_text: transcript}` (or `%{answer: transcript}` if the suspended step’s `resume_schema` has `:answer`).
 - Design your workflow so that the first step that needs user speech has `suspend: true` and `resume_schema: %{human_input_text: :string}` (or `answer: :string`). When the step runs after resume, read from `context[:human_input][:human_input_text]` or `context[:human_input][:answer]` (or fallback to `context.human_input_text` / `context.answer`) and put the result into context (e.g. `query`).
@@ -144,6 +216,7 @@ Use `transport` from the return payload to bootstrap client behavior:
 | `Synaptic.Voice.client_connected(session_id)` | OpenAI realtime only. |
 | `Synaptic.Voice.client_disconnected(session_id)` | OpenAI realtime only. |
 | `Synaptic.Voice.ingest_provider_event(session_id, payload)` | OpenAI realtime only. |
+| `Synaptic.Voice.approve_capability(session_id, capability_name)` | Grant the next invocation of a pending consequential capability; OpenAI realtime only. |
 | `Synaptic.Voice.push_audio(session_id, chunk)` | Headless and Gemini realtime. |
 | `Synaptic.Voice.push_text(session_id, text)` | Headless and Gemini realtime. |
 | `Synaptic.Voice.stop_session(session_id, reason)` | Stop the session. |

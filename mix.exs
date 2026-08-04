@@ -4,7 +4,7 @@ defmodule Synaptic.MixProject do
   def project do
     [
       app: :synaptic,
-      version: "0.3.0-alpha.9",
+      version: "0.3.0-alpha.10",
       elixir: "~> 1.14",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -18,6 +18,14 @@ defmodule Synaptic.MixProject do
           "docs/monitor-guide.md",
           "docs/technical-overview.md",
           "docs/voice-guide.md",
+          "docs/voice-profiles.md",
+          "docs/voice_modes/duplex_setup.md",
+          "docs/voice_modes/realtime_setup.md",
+          "docs/voice_modes/turn_based_setup.md",
+          "docs/voice_frontend/duplex_auto_mute_setup.md",
+          "docs/voice_frontend/duplex_frontend_setup.md",
+          "docs/voice_frontend/realtime_frontend_setup.md",
+          "docs/voice_frontend/turn_based_frontend_setup.md",
           "docs/safety-validation-todo.md",
           "docs/four-equal-agents-peer-mesh-tutorial.md",
           "docs/voice-and-agents-x-trends-trading-tutorial.md",
